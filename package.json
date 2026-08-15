@@ -1,0 +1,17 @@
+{
+  "name": "kilo-herdr-engineering-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Parallel test, code, and readability review workflow for Kilo Code sessions running in Herdr",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test plugin/workflow/workflow-state.test.ts",
+    "check": "npm test"
+  },
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "dependencies": {
+    "@kilocode/plugin": "7.4.20"
+  }
+}

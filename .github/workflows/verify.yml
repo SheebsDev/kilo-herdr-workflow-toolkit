@@ -1,0 +1,67 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - if: runner.os == 'Linux'
+        run: sh -n scripts/install.sh && sh -n scripts/uninstall.sh
+      - if: runner.os == 'Linux'
+        run: |
+          test_home=$(mktemp -d)
+          HOME="$test_home" sh scripts/install.sh --skip-dependencies --skip-checks --profile "$test_home/profile"
+          grep -F 'export KILO_CONFIG_DIR=' "$test_home/profile"
+          HOME="$test_home" sh scripts/uninstall.sh --profile "$test_home/profile"
+          ! grep -F 'kilo-herdr-engineering-workflow' "$test_home/profile"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $parseErrors = @()
+          foreach ($script in 'scripts/install.ps1', 'scripts/uninstall.ps1') {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref] $null,
+              [ref] $errors
+            ) | Out-Null
+            $parseErrors += $errors
+          }
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List -Force
+            exit 1
+          }
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\scripts\install.ps1 -SkipDependencies -SkipChecks
+          $registered = [Environment]::GetEnvironmentVariable('KILO_CONFIG_DIR', 'User')
+          if (-not [IO.Path]::GetFullPath($registered).Equals(
+            [IO.Path]::GetFullPath((Get-Location).Path),
+            [StringComparison]::OrdinalIgnoreCase
+          )) {
+            throw "Unexpected KILO_CONFIG_DIR registration: $registered"
+          }
+          .\scripts\uninstall.ps1
+          if ([Environment]::GetEnvironmentVariable('KILO_CONFIG_DIR', 'User')) {
+            throw 'KILO_CONFIG_DIR remained registered after uninstall.'
+          }

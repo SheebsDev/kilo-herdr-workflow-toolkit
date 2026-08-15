@@ -1,0 +1,11 @@
+node_modules/
+.workflow/
+.env
+.env.*
+*.log
+*.tmp
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+Thumbs.db
