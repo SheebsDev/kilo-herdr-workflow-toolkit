@@ -19,5 +19,6 @@
 ## Packaging
 
 - Kilo discovers commands, skills, and plugins when `KILO_CONFIG_DIR` points to this repository.
-- The installers register the checkout in place. Moving the checkout after installation requires running the installer again.
+- Global installation registers the checkout in place. Moving the checkout after installation requires running the global installer again.
+- Project installation copies the Kilo payload into the target project's `.kilo` directory and does not modify global environment configuration.
 - Preserve compatibility with an existing global Kilo configuration. Installation must not copy over or delete user configuration.

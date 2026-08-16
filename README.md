@@ -53,6 +53,8 @@ Set-Location kilo-herdr-engineering-workflow
 
 The installer runs `npm ci`, runs the unit tests, and sets the user-level `KILO_CONFIG_DIR` to this checkout. Start a new terminal after installation.
 
+Global scope is the default and can also be selected explicitly with `-Scope Global`.
+
 ## Install On macOS Or Linux
 
 ```bash
@@ -65,9 +67,31 @@ The installer runs `npm ci`, runs the unit tests, and adds a marked `KILO_CONFIG
 
 Use `--profile /path/to/profile` when automatic profile selection is not suitable.
 
+Global scope is the default and can also be selected explicitly with `--scope global`.
+
+## Install For One Project
+
+Project scope installs the workflow into the target project's `.kilo` directory. It does not set `KILO_CONFIG_DIR` or modify a shell profile.
+
+Windows:
+
+```powershell
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\path\to\project
+```
+
+macOS or Linux:
+
+```bash
+sh ./scripts/install.sh --scope project --project /path/to/project
+```
+
+Project installation runs `npm ci` in a staging directory and copies the plugin dependency into the project's `.kilo/node_modules`. Use `-SkipDependencies` or `--skip-dependencies` only when that dependency is already resolvable there.
+
+Project installation refuses to proceed when the global workflow plugin is already active, because Kilo would load duplicate workflow tools. Remove the global installation before installing the project-scoped copy.
+
 ## Existing Kilo Configuration
 
-Kilo deep-merges this additional configuration directory with normal global and project configuration. The installers do not modify `~/.config/kilo`, `~/.kilo`, `.kilo`, or provider credentials.
+Kilo deep-merges this additional configuration directory with normal global and project configuration. Global installation does not modify `~/.config/kilo`, `~/.kilo`, project `.kilo` files, or provider credentials. Project installation intentionally writes its payload to the selected project's `.kilo` directory after checking for conflicts.
 
 Installation stops when either of these could cause an ambiguous setup:
 
@@ -117,4 +141,14 @@ macOS or Linux:
 sh ./scripts/uninstall.sh
 ```
 
-Uninstalling removes only the registration created by the installer. It does not delete this checkout, existing Kilo configuration, or workflow history in other projects.
+For a project-scoped installation, pass the same project path:
+
+```powershell
+.\scripts\uninstall.ps1 -Scope Project -ProjectPath C:\path\to\project
+```
+
+```bash
+sh ./scripts/uninstall.sh --scope project --project /path/to/project
+```
+
+Global uninstall removes only the registration created by the installer. Project uninstall removes only unchanged files recorded by its project manifest. Neither mode deletes existing Kilo configuration or workflow history in other projects.
