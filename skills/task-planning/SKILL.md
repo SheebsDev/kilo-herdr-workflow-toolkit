@@ -23,6 +23,29 @@ Each Task Card should answer:
 * How do we know it is complete?
 * How should it be verified?
 
+Each Task Card must also begin with a YAML metadata block so its identity,
+dependency readiness, and lifecycle status are visible without reading the
+body or inspecting Git history:
+
+```yaml
+---
+task_id: TASK-XXX
+status: pending
+depends_on: []
+---
+```
+
+Use only these statuses: `pending`, `in_progress`, `blocked`, and `completed`.
+Set every newly created card to `pending`. `depends_on` contains Task Card IDs,
+not filenames; use an empty list when there are no dependencies. The metadata
+block is the canonical source for status and dependencies. Do not duplicate
+those values in a second card-level field.
+
+To identify the next eligible card, choose a `pending` card whose
+`depends_on` entries all have `status: completed`; use Task Card order as the
+tie-breaker. Do not infer completion from filename order, Git commits, or
+whether implementation files appear changed.
+
 A Task Card should be small enough that its implementation and resulting diff are easy for a human to understand and review.
 
 # Preserve the Plan
@@ -166,6 +189,14 @@ Choose boundaries based on architecture and reviewability, not a fixed template.
 
 Use this structure for each card:
 
+```yaml
+---
+task_id: TASK-XXX
+status: pending
+depends_on: []
+---
+```
+
 ## TASK-XXX — Short Action-Oriented Title
 
 ### Objective
@@ -197,12 +228,6 @@ Be concrete.
 Explicitly identify nearby work that this card does not own.
 
 Use this to prevent scope creep and accidental implementation of later cards.
-
-### Dependencies
-
-List required predecessor Task Cards.
-
-Write `None` when the task is independent.
 
 ### Implementation Guidance
 

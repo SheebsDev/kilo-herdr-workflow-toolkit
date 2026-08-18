@@ -22,6 +22,15 @@ When a Task Card is provided, treat it as the authoritative definition of:
 * constraints
 * explicitly excluded scope
 
+Task Cards contain a YAML metadata block with `task_id`, `status`, and
+`depends_on`. Treat it as the canonical task tracker. Before implementation,
+confirm every `depends_on` card is `completed`; if a dependency is not
+complete, do not silently proceed and mark the requested card `blocked` with
+the reason. Set the requested card to `in_progress` when work begins. Set it
+to `blocked` when work cannot proceed, or `completed` only after the
+completion criteria below are satisfied. Do not use a Git commit as a
+substitute for updating the card status.
+
 Read relevant project instructions such as `AGENTS.md`.
 
 Inspect enough of the existing implementation to understand the architecture, conventions, and affected behavior before making changes.
@@ -193,6 +202,11 @@ Consider the implementation complete when:
 * no accepted BLOCKING code-review findings remain
 * no accepted BLOCKING readability findings remain
 * important unverified areas have either been resolved or explicitly accepted by the user
+
+When the task is complete, update the Task Card metadata status to
+`completed`. If implementation or verification is incomplete, leave it as
+`in_progress` or change it to `blocked` with a concise explanation in the
+card's Notes section.
 
 Before finishing, provide a concise summary containing:
 
