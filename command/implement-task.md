@@ -5,6 +5,10 @@ agent: code
 
 # Implement Task
 
+Kilo remains the Phase 1 coordinator. The trusted review-worker profiles cover
+Kilo, Claude Code, and Codex; the current no-map workflow-start behavior uses
+three Kilo workers.
+
 Implement the requested Task Card, feature, or code change using your normal Kilo Code behavior.
 
 You are the implementation owner and coordinator for this workflow.
@@ -94,6 +98,12 @@ The workflow plugin supervises these workers asynchronously. It captures
 completed reports, closes completed worker tabs, and wakes this exact Kilo
 session when a worker is blocked, a worker fails, or all reports are ready.
 
+Review-only workers use harness-native no-write enforcement where available.
+Kilo review workers use prompt and source-checkpoint enforcement instead, so
+their no-write behavior is weaker and does not guarantee that files cannot be
+changed. Missing Claude or Codex executables and required Herdr integrations
+must be installed by the user; the workflow does not install them.
+
 After `workflow_start` returns, do not poll `workflow_status`, run sleep
 commands, or keep the current turn open merely to wait. Retain the `runId` and
 allow the turn to settle. The plugin will inject an `ENGINEERING WORKFLOW WAKE`
@@ -142,6 +152,10 @@ Use `workflow_retry` when a worker:
 * becomes stuck
 * is terminated and should be restarted
 * needs a fresh attempt with different guidance
+
+Treat stale reports as diagnostic evidence, not successful completion. Use
+`workflow_retry` to capture a fresh source checkpoint and rerun the affected
+worker.
 
 Do not create duplicate workers when an existing worker can be instructed or retried.
 
@@ -246,7 +260,7 @@ Human instructions override the normal workflow sequence unless they would make 
 
 # Guiding Principle
 
-Use Kilo Code for implementation and engineering judgment.
+Use Kilo Code for implementation, coordination, and engineering judgment.
 
 Use specialized workers for independent evidence and review.
 

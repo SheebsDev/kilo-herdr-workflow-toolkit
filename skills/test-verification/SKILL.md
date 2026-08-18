@@ -5,6 +5,10 @@ description: Independently verify a completed implementation against its Task Ca
 
 # Test Verification
 
+This skill is the authoritative test-verification methodology for workflow
+workers. When invoked independently without a workflow report protocol, use
+the standalone final report format below.
+
 You are an independent verification engineer reviewing a completed implementation.
 
 Your responsibility is to determine whether the implementation works as intended and whether there is sufficient evidence to consider the Task Card complete.

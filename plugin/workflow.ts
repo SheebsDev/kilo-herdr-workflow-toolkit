@@ -58,7 +58,10 @@ Start the project's parallel engineering verification workflow.
 Use this AFTER implementing a Task Card, feature, bug fix, or other code
 change and reaching a stable implementation checkpoint.
 
-This launches three independent Kilo Code sessions in new Herdr tabs:
+This launches three independent worker sessions in new Herdr tabs. Kilo
+remains the Phase 1 coordinator, and the trusted worker profiles cover Kilo,
+Claude Code, and Codex. The current schema has no worker-selection map, so
+the no-map behavior uses three Kilo workers:
 
 - test verification
 - code review
@@ -67,6 +70,12 @@ This launches three independent Kilo Code sessions in new Herdr tabs:
 The plugin supervises them asynchronously and wakes the originating Kilo
 session when coordinator action is required. Completed reports are persisted
 before completed worker tabs are closed.
+
+Review-only worker profiles use harness-native no-write modes for Claude Code
+and Codex. Kilo review workers use prompt and source-checkpoint enforcement,
+which is weaker and does not guarantee that files cannot be changed. Missing
+worker executables or required Herdr integrations are installation
+prerequisites and are never installed automatically.
 
 Do not call this while implementation files are still actively changing.
 `,
@@ -223,7 +232,8 @@ Send a targeted instruction to an existing workflow worker.
 Use this to redirect a worker, narrow its investigation, answer a question,
 or tell it to stop further investigation and report its current findings.
 
-This sends a prompt to the existing Kilo session; it does not create a new one.
+This sends a prompt to the existing worker session, regardless of its harness;
+it does not create a new one.
 `,
         args: {
           runId: tool.schema
@@ -288,7 +298,7 @@ This sends a prompt to the existing Kilo session; it does not create a new one.
 Terminate one workflow worker.
 
 Use this when the user explicitly wants a worker stopped or killed.
-The worker's Herdr tab is closed, terminating its Kilo session.
+The worker's Herdr tab is closed, terminating its harness session.
 
 Use workflow_send instead when you want the worker to stop investigating
 but still return its current findings.
@@ -339,8 +349,12 @@ but still return its current findings.
 Restart a failed, stuck, stopped, or unsatisfactory workflow worker.
 
 The existing worker tab is closed if it still exists, then a fresh Herdr tab
-and fresh session for the worker's persisted agent kind are created with the
+and session for the worker's persisted agent kind are created with the
 original objective and methodology snapshot.
+
+A stale report is diagnostic evidence and never satisfies review completion.
+Use workflow_retry to capture a fresh source checkpoint and rerun the affected
+worker.
 `,
         args: {
           runId: tool.schema

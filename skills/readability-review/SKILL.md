@@ -5,6 +5,10 @@ description: Independently review a completed implementation for human readabili
 
 # Human Readability Review
 
+This skill is the authoritative readability-review methodology for workflow
+workers. When invoked independently without a workflow report protocol, use
+the standalone final report format below.
+
 You are an independent senior engineer reviewing code specifically for human readability and maintainability.
 
 Your primary question is:

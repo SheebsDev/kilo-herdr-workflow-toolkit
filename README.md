@@ -1,16 +1,23 @@
 # Kilo Herdr Engineering Workflow
 
-A portable Kilo configuration package that coordinates implementation work with three independent Herdr review sessions:
+A portable Kilo configuration package in which a Kilo coordinator runs three
+independent Herdr review workers:
 
 - test and build verification
 - engineering code review
 - human readability review
 
-The coordinator receives durable completion notifications, evaluates findings, fixes accepted blocking issues, and can retry only the affected reviewer.
+The Kilo coordinator receives durable completion notifications, evaluates
+findings, fixes accepted blocking issues, and can retry only the affected
+reviewer. The trusted worker profiles cover Kilo, Claude Code, and Codex;
+the current no-map `workflow_start` path launches Kilo workers by default.
 
 ## What This Solves
 
-This workflow lets multiple independent reviews run simultaneously inside Herdr while still allowing an engineer to redirect or directly cancel any reviewer. The result is a more readable, durable process for producing pull requests and commits, helping engineers stay connected to the code as codebases grow.
+This workflow lets multiple independent reviews run simultaneously inside Herdr
+while still allowing an engineer to redirect or directly cancel any reviewer.
+The result is a more readable, durable process for producing pull requests and
+commits, helping engineers stay connected to the code as codebases grow.
 
 ## Workflow
 
@@ -18,16 +25,16 @@ The full engineering cycle is:
 
 1. **Plan** the work and define the intended outcome.
 2. Use the **task-planning skill** to turn the plan into small, ordered Task Cards with acceptance criteria and verification requirements.
-3. Run **`/implement-task`** for each Task Card or a set of cards. At a stable implementation checkpoint, the command starts parallel test, code, and readability reviews in Herdr.
+3. Run **`/implement-task`** for each Task Card or a set of cards. At a stable implementation checkpoint, the Kilo coordinator starts parallel test, code, and readability reviews in Herdr.
 
 Reviewers report durable results, can be redirected or cancelled directly, and affected reviewers can be retried without restarting the entire workflow.
 
 ## Included
 
-- `/implement-task` Kilo command
+- `/implement-task` Kilo coordinator command
 - `workflow_start`, `workflow_status`, `workflow_send`, `workflow_stop`, and `workflow_retry` tools
 - Herdr-to-Kilo agent-state integration
-- Windows long-prompt launcher shim
+- Windows long-prompt launcher shim for Kilo workers
 - code review, readability review, test verification, and task planning skills
 - Windows and Unix registration scripts
 - GitHub Actions verification on Windows and Linux
@@ -42,6 +49,41 @@ The repository intentionally excludes model/provider configuration, credentials,
 - Git
 
 The parallel workflow must be started from a Kilo session running inside Herdr. Ordinary Kilo sessions can load the package, but `workflow_start` will reject launches without Herdr's workspace environment.
+
+## Worker Harnesses
+
+Phase 1 defines `kilo`, `claude`, and `codex` as trusted worker harnesses. Kilo
+is the only supported coordinator. The current `workflow_start` schema has no
+worker-selection map, so its no-map behavior is three Kilo workers, one each
+for tests, code review, and readability. The trusted profiles and persisted
+worker definitions are ready for configurable worker selection in the later
+runtime work.
+
+When Claude Code or Codex worker selection is enabled, those workers require
+their executable and corresponding Herdr integration. Install missing
+prerequisites explicitly; the workflow does not install them automatically.
+For example:
+
+```text
+herdr integration install claude
+herdr integration install codex
+```
+
+Review-only workers use no-write modes where the harness supports them:
+
+- Claude Code uses plan mode.
+- Codex uses a read-only sandbox without approval escalation.
+- Kilo uses prompt and tracked-source-checkpoint enforcement. This is weaker
+  enforcement and does not guarantee that Kilo cannot write files.
+
+Test verification workers retain the permissions needed to run checks and
+write generated artifacts. Status output identifies each worker harness and
+its enforcement strength.
+
+If tracked source changes during a worker attempt, the captured report is
+marked `stale`. It remains diagnostic evidence, does not count toward review
+completion, and requires `workflow_retry` to capture a fresh checkpoint and
+rerun that worker.
 
 ## Install On Windows
 
