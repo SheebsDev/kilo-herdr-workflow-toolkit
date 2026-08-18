@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import test from "node:test";
@@ -15,7 +15,7 @@ import {
   isWorkflowRun,
 } from "./model.ts";
 import type { WorkflowRunV2, WorkerRecord } from "./model.ts";
-import { createRun, loadRun, saveNewRun } from "./run-store.ts";
+import { createRun, loadRun, saveNewRun, saveRun } from "./run-store.ts";
 import { isWorkerInspectionStale } from "./supervisor.ts";
 
 test("workflow notifications are durable and deduplicated by key", async () => {
@@ -50,6 +50,9 @@ test("workflow notifications are durable and deduplicated by key", async () => {
     await saveNewRun(projectRoot, run);
 
     const loaded = await loadRun(projectRoot, run.id);
+    assert.equal(loaded.version, 2);
+    assert.deepEqual(loaded.workerOrder, ["tests", "code-review", "readability"]);
+    assert.equal(loaded.workers.tests.definition?.agentKind, "kilo");
     assert.equal(first, duplicate);
     assert.equal(first.sequence, 1);
     assert.equal(second.sequence, 2);
@@ -61,7 +64,7 @@ test("workflow notifications are durable and deduplicated by key", async () => {
   }
 });
 
-test("legacy version-one runs load without supervision fields", async () => {
+test("version-one runs are rejected without migration or deletion", async () => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-legacy-"));
 
   try {
@@ -70,16 +73,96 @@ test("legacy version-one runs load without supervision fields", async () => {
       originSessionId: "session-legacy",
       workspaceId: "workspace-legacy",
     });
+    const legacyRun = { ...run, version: 1 };
+    const runDirectory = path.join(projectRoot, ".workflow", "runs", run.id);
+    const runPath = path.join(runDirectory, "run.json");
+    const contents = `${JSON.stringify(legacyRun, null, 2)}\n`;
 
-    delete run.originSessionId;
-    delete run.nextNotificationSequence;
-    delete run.notifications;
+    await mkdir(runDirectory, { recursive: true });
+    await writeFile(runPath, contents, "utf8");
+
+    await assert.rejects(
+      loadRun(projectRoot, run.id),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("unsupported version 1") &&
+        error.message.includes(`.workflow/runs/${run.id}`),
+    );
+    assert.equal(await readFile(runPath, "utf8"), contents);
+  } finally {
+    await rm(projectRoot, { force: true, recursive: true });
+  }
+});
+
+test("invalid version-two worker maps are rejected before persistence", async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-invalid-"));
+
+  try {
+    const run = createRun({
+      task: "Reject an invalid worker map",
+      originSessionId: "session-invalid",
+      workspaceId: "workspace-invalid",
+    });
+    delete run.workers.tests;
+
+    await assert.rejects(
+      saveNewRun(projectRoot, run),
+      /is invalid\.$/,
+    );
+    await assert.rejects(
+      readFile(path.join(projectRoot, ".workflow", "runs", "latest")),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await rm(projectRoot, { force: true, recursive: true });
+  }
+});
+
+test("version-two runs can be updated atomically and loaded through latest", async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-atomic-"));
+
+  try {
+    const run = createRun({
+      task: "Persist an atomic update",
+      originSessionId: "session-atomic",
+      workspaceId: "workspace-atomic",
+    });
     await saveNewRun(projectRoot, run);
 
+    run.workers.tests.state = "done";
+    await saveRun(projectRoot, run);
+
+    const loaded = await loadRun(projectRoot);
+    assert.equal(loaded.version, 2);
+    assert.equal(loaded.workers.tests.state, "done");
+  } finally {
+    await rm(projectRoot, { force: true, recursive: true });
+  }
+});
+
+test("version-two storage accepts arbitrary valid role IDs", async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-roles-"));
+
+  try {
+    const run = createVersionTwoRun();
+    run.workerOrder = ["security-audit"];
+    run.workers = {
+      "security-audit": {
+        ...run.workers.tests,
+        kind: "security-audit",
+        roleId: "security-audit",
+        definition: {
+          ...run.workers.tests.definition!,
+          roleId: "security-audit",
+          label: "Security Audit",
+        },
+      },
+    };
+
+    await saveNewRun(projectRoot, run);
     const loaded = await loadRun(projectRoot, run.id);
-    assert.equal(loaded.version, 1);
-    assert.equal(loaded.originSessionId, undefined);
-    assert.equal(loaded.notifications, undefined);
+    assert.deepEqual(loaded.workerOrder, ["security-audit"]);
+    assert.equal(loaded.workers["security-audit"].kind, "security-audit");
   } finally {
     await rm(projectRoot, { force: true, recursive: true });
   }

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   open,
@@ -14,18 +14,18 @@ import type { FileHandle } from "node:fs/promises";
 import * as path from "node:path";
 
 import {
+  BUILT_IN_ROLE_DEFINITIONS,
   createAgentName,
-  isRunState,
+  isWorkflowRun,
   isLegacyAgentName,
-  isWorkflowNotificationKind,
-  isWorkerKind,
-  isWorkerState,
   WORKER_ORDER,
 } from "./model.ts";
 import type {
-  WorkerKind,
+  RoleId,
+  WorkerDefinition,
   WorkerRecord,
   WorkflowRun,
+  WorkflowRunV2,
 } from "./model.ts";
 
 const CURRENT_RUN_ID_PATTERN =
@@ -41,13 +41,21 @@ interface CreateRunOptions {
   taskCardPath?: string;
   originSessionId: string;
   workspaceId: string;
+  paneId?: string;
 }
 
-export function createRun(options: CreateRunOptions): WorkflowRun {
+export function createRun(options: CreateRunOptions): WorkflowRunV2 {
   const now = new Date().toISOString();
+  const paneId =
+    options.paneId?.trim() ||
+    process.env.HERDR_PANE_ID?.trim() ||
+    options.originSessionId.trim();
+  const workers = Object.fromEntries(
+    WORKER_ORDER.map((roleId) => [roleId, initialWorker(roleId)]),
+  );
 
   return {
-    version: 1,
+    version: 2,
     id: `run-${randomUUID()}`,
     task: options.task.trim(),
     taskCardPath: options.taskCardPath,
@@ -56,9 +64,14 @@ export function createRun(options: CreateRunOptions): WorkflowRun {
     createdAt: now,
     updatedAt: now,
     state: "launching",
-    workers: Object.fromEntries(
-      WORKER_ORDER.map((kind) => [kind, initialWorker(kind)]),
-    ) as Record<WorkerKind, WorkerRecord>,
+    workerOrder: [...WORKER_ORDER],
+    origin: {
+      workspaceId: options.workspaceId,
+      paneId,
+      coordinatorKind: "kilo",
+      sessionId: options.originSessionId,
+    },
+    workers,
     nextNotificationSequence: 1,
     notifications: [],
   };
@@ -102,12 +115,12 @@ export async function saveRun(
 export async function loadRun(
   projectRoot: string,
   requestedRunId?: string,
-): Promise<WorkflowRun> {
+): Promise<WorkflowRunV2> {
   const runId = await resolveRunId(projectRoot, requestedRunId);
   return loadRunById(projectRoot, runId);
 }
 
-export async function listRuns(projectRoot: string): Promise<WorkflowRun[]> {
+export async function listRuns(projectRoot: string): Promise<WorkflowRunV2[]> {
   let entries;
 
   try {
@@ -233,7 +246,7 @@ async function resolveRunId(
 async function loadRunById(
   projectRoot: string,
   runId: string,
-): Promise<WorkflowRun> {
+): Promise<WorkflowRunV2> {
   assertRunId(runId);
 
   let contents: string;
@@ -257,11 +270,44 @@ async function loadRunById(
   return assertValidRun(parsed, runId);
 }
 
-function initialWorker(kind: WorkerKind): WorkerRecord {
+function initialWorker(roleId: string): WorkerRecord {
+  const definition = workerDefinition(roleId);
+
   return {
-    kind,
+    kind: roleId,
+    roleId,
     attempt: 0,
+    definition,
     state: "launching",
+  };
+}
+
+function workerDefinition(roleId: string): WorkerDefinition {
+  const builtIn = BUILT_IN_ROLE_DEFINITIONS.find(
+    (definition) => definition.roleId === roleId,
+  );
+
+  if (!builtIn) {
+    throw new Error(`Unknown built-in workflow role "${roleId}".`);
+  }
+
+  const body = `Bundled ${builtIn.skillId} reviewer methodology.`;
+
+  return {
+    roleId: builtIn.roleId,
+    label: builtIn.label,
+    agentKind: "kilo",
+    skill: {
+      id: builtIn.skillId,
+      hash: createHash("sha256").update(body, "utf8").digest("hex"),
+      body,
+    },
+    capabilityProfile: "kilo-default",
+    enforcement: {
+      profile: "kilo-default",
+      strength: "moderate",
+      allowsWrites: true,
+    },
   };
 }
 
@@ -299,68 +345,39 @@ function assertRunId(runId: unknown): asserts runId is string {
 function assertValidRun(
   value: unknown,
   expectedRunId: string,
-): WorkflowRun {
+): WorkflowRunV2 {
   assertRunId(expectedRunId);
 
-  if (!isRecord(value) || value.version !== 1) {
-    throw new Error(`Workflow run ${expectedRunId} has an unsupported format.`);
+  if (!isRecord(value) || value.version !== 2) {
+    if (isRecord(value) && value.version === 1) {
+      throw new Error(
+        [
+          `Workflow run ${expectedRunId} uses unsupported version 1 data.`,
+          `The obsolete .workflow/runs/${expectedRunId} data was not migrated or deleted.`,
+        ].join(" "),
+      );
+    }
+
+    throw new Error(
+      `Workflow run ${expectedRunId} has an unsupported format; expected version 2.`,
+    );
   }
 
-  if (
-    value.id !== expectedRunId ||
-    !isNonEmptyString(value.task) ||
-    !isOptionalString(value.taskCardPath) ||
-    !isOptionalString(value.originSessionId) ||
-    !isNonEmptyString(value.herdrWorkspaceId) ||
-    !isIsoDate(value.createdAt) ||
-    !isIsoDate(value.updatedAt) ||
-    !isRunState(value.state) ||
-    !isRecord(value.workers) ||
-    !isOptionalPositiveInteger(value.nextNotificationSequence) ||
-    !isOptionalNotificationArray(value.notifications)
-  ) {
+  if (value.id !== expectedRunId || !isWorkflowRun(value)) {
     throw new Error(`Workflow run ${expectedRunId} is invalid.`);
   }
 
-  for (const kind of WORKER_ORDER) {
-    assertValidWorker(value.workers[kind], kind, expectedRunId);
+  for (const roleId of value.workerOrder) {
+    const worker = value.workers[roleId];
+
+    if (!isExpectedAgentName(worker.agentName, expectedRunId, roleId, worker.attempt)) {
+      throw new Error(
+        `Workflow run ${expectedRunId} has an invalid ${roleId} worker agent name.`,
+      );
+    }
   }
 
-  return value as unknown as WorkflowRun;
-}
-
-function assertValidWorker(
-  value: unknown,
-  expectedKind: WorkerKind,
-  runId: string,
-): void {
-  if (
-    !isRecord(value) ||
-    !isWorkerKind(value.kind) ||
-    value.kind !== expectedKind ||
-    !Number.isInteger(value.attempt) ||
-    (value.attempt as number) < 0 ||
-    !isOptionalString(value.agentName) ||
-    !isExpectedAgentName(
-      value.agentName,
-      runId,
-      expectedKind,
-      value.attempt as number,
-    ) ||
-    !isOptionalString(value.tabId) ||
-    !isOptionalString(value.paneId) ||
-    !isOptionalNonNegativeInteger(value.pendingPromptStartSeq) ||
-    !isOptionalNonNegativeInteger(value.stateChangeSeq) ||
-    !isWorkerState(value.state) ||
-    !isOptionalString(value.lastError) ||
-    !isOptionalWorkerResult(value.result) ||
-    !isOptionalIsoDate(value.closedAt) ||
-    !isOptionalString(value.cleanupError)
-  ) {
-    throw new Error(
-      `Workflow run ${runId} has an invalid ${expectedKind} worker.`,
-    );
-  }
+  return value;
 }
 
 function serializeRun(run: WorkflowRun): string {
@@ -540,96 +557,19 @@ function assertPathInsideProject(
 function isExpectedAgentName(
   agentName: unknown,
   runId: string,
-  kind: WorkerKind,
+  roleId: RoleId,
   attempt: number,
 ): boolean {
   return (
     agentName === undefined ||
     agentName === "" ||
-    agentName === createAgentName(runId, kind, attempt) ||
-    isLegacyAgentName(agentName, runId, kind, attempt)
+    agentName === createAgentName(runId, roleId, attempt) ||
+    isLegacyAgentName(agentName, runId, roleId, attempt)
   );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === "string";
-}
-
-function isOptionalIsoDate(value: unknown): value is string | undefined {
-  return value === undefined || isIsoDate(value);
-}
-
-function isOptionalPositiveInteger(value: unknown): boolean {
-  return (
-    value === undefined ||
-    (Number.isInteger(value) && (value as number) > 0)
-  );
-}
-
-function isOptionalWorkerResult(value: unknown): boolean {
-  return (
-    value === undefined ||
-    (isRecord(value) &&
-      typeof value.output === "string" &&
-      isIsoDate(value.capturedAt))
-  );
-}
-
-function isOptionalNotificationArray(value: unknown): boolean {
-  if (value === undefined) {
-    return true;
-  }
-
-  if (!Array.isArray(value)) {
-    return false;
-  }
-
-  let previousSequence = 0;
-
-  for (const notification of value) {
-    if (
-      !isRecord(notification) ||
-      !Number.isInteger(notification.sequence) ||
-      (notification.sequence as number) <= previousSequence ||
-      !isNonEmptyString(notification.key) ||
-      !isWorkflowNotificationKind(notification.kind) ||
-      !isNonEmptyString(notification.message) ||
-      !isIsoDate(notification.createdAt) ||
-      !isOptionalIsoDate(notification.deliveredAt)
-    ) {
-      return false;
-    }
-
-    previousSequence = notification.sequence as number;
-  }
-
-  return true;
-}
-
-function isOptionalNonNegativeInteger(
-  value: unknown,
-): value is number | undefined {
-  return (
-    value === undefined ||
-    (Number.isInteger(value) && (value as number) >= 0)
-  );
-}
-
-function isIsoDate(value: unknown): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
 function isNodeError(error: unknown, code: string): boolean {

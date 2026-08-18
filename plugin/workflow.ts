@@ -88,6 +88,7 @@ Do not call this while implementation files are still actively changing.
           const run = createRun({
             task: args.task,
             originSessionId: context.sessionID,
+            paneId: process.env.HERDR_PANE_ID,
             taskCardPath: await normalizeTaskCardPath(
               projectRoot,
               args.taskCardPath,
@@ -379,11 +380,12 @@ and fresh Kilo Code session are created with the worker's original objective.
                   additionalInstruction: args.additionalInstruction,
                 });
               } catch (error) {
-                run.workers[args.worker] = workerErrorRecord(
-                  args.worker,
-                  nextAttempt,
-                  error,
-                );
+                   run.workers[args.worker] = workerErrorRecord(
+                     args.worker,
+                     nextAttempt,
+                     error,
+                     existing.definition,
+                   );
               }
 
               try {
@@ -452,7 +454,12 @@ async function launchWorkers(
           signal,
         });
       } catch (error) {
-        run.workers[kind] = workerErrorRecord(kind, 1, error);
+        run.workers[kind] = workerErrorRecord(
+          kind,
+          1,
+          error,
+          run.workers[kind].definition,
+        );
       }
 
       refreshRunState(run);

@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 import { createAgentName } from "./model.ts";
 import type {
+  WorkerDefinition,
   WorkerKind,
   WorkerRecord,
   WorkerState,
@@ -114,6 +115,7 @@ export async function spawnWorker(
     additionalInstruction,
   } = options;
   const spec = WORKER_SPECS[kind];
+  const definition = run.workers[kind].definition;
   const agentName = createAgentName(run.id, kind, attempt);
   const initialPrompt = buildWorkerPrompt(run, kind, additionalInstruction);
   const windowsLaunch = process.platform === "win32";
@@ -235,7 +237,9 @@ export async function spawnWorker(
 
     return {
       kind,
+      roleId: kind,
       attempt,
+      definition,
       agentName,
       tabId,
       paneId,
@@ -386,14 +390,21 @@ export function workerErrorRecord(
   kind: WorkerKind,
   attempt: number,
   error: unknown,
+  definition?: WorkerDefinition,
 ): WorkerRecord {
   if (error instanceof WorkerLaunchError) {
-    return error.worker;
+    return {
+      ...error.worker,
+      roleId: kind,
+      definition,
+    };
   }
 
   return {
     kind,
+    roleId: kind,
     attempt,
+    definition,
     state: "error",
     lastError: errorMessage(error),
   };
