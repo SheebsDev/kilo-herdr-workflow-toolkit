@@ -127,6 +127,21 @@ export interface WorkerResult {
   report?: unknown;
 }
 
+export interface WorkerAttemptEvidence {
+  attempt: number;
+  definition: WorkerDefinition;
+  sourceCheckpoint?: SourceCheckpoint;
+  agentName?: string;
+  tabId?: string;
+  paneId?: string;
+  state: WorkerState;
+  lastError?: string;
+  result?: WorkerResult;
+  staleDetails?: StaleWorkerDetails;
+  closedAt?: string;
+  cleanupError?: string;
+}
+
 export interface WorkflowNotification {
   sequence: number;
   key: string;
@@ -150,6 +165,7 @@ export interface WorkerRecord {
   stateChangeSeq?: number;
   state: WorkerState;
   lastError?: string;
+  attemptHistory?: WorkerAttemptEvidence[];
   sourceCheckpoint?: SourceCheckpoint;
   result?: WorkerResult;
   staleDetails?: StaleWorkerDetails;
@@ -193,6 +209,7 @@ export interface WorkerSummary {
   paneId?: string;
   error?: string;
   capturedAt?: string;
+  attemptHistory?: WorkerAttemptEvidence[];
   sourceCheckpoint?: SourceCheckpoint;
   staleDetails?: StaleWorkerDetails;
   closedAt?: string;
@@ -307,6 +324,44 @@ export function isWorkerResult(value: unknown): value is WorkerResult {
   );
 }
 
+function isWorkerAttemptEvidence(
+  value: unknown,
+): value is WorkerAttemptEvidence {
+  return (
+    isRecord(value) &&
+    Number.isInteger(value.attempt) &&
+    (value.attempt as number) >= 0 &&
+    isWorkerDefinition(value.definition) &&
+    isOptionalString(value.agentName) &&
+    isOptionalString(value.tabId) &&
+    isOptionalString(value.paneId) &&
+    isWorkerState(value.state) &&
+    isOptionalString(value.lastError) &&
+    (value.sourceCheckpoint === undefined ||
+      isSourceCheckpoint(value.sourceCheckpoint)) &&
+    (value.result === undefined || isWorkerResult(value.result)) &&
+    (value.staleDetails === undefined ||
+      isStaleWorkerDetails(value.staleDetails)) &&
+    isOptionalIsoDate(value.closedAt) &&
+    isOptionalString(value.cleanupError)
+  );
+}
+
+function isOptionalAttemptHistory(
+  value: unknown,
+  roleId?: unknown,
+): value is WorkerAttemptEvidence[] | undefined {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every(
+        (evidence) =>
+          isWorkerAttemptEvidence(evidence) &&
+          (roleId === undefined || evidence.definition.roleId === roleId),
+      ))
+  );
+}
+
 export function isWorkerRecord(value: unknown): value is WorkerRecord {
   if (
     !isRecord(value) ||
@@ -324,6 +379,7 @@ export function isWorkerRecord(value: unknown): value is WorkerRecord {
     !isOptionalNonNegativeInteger(value.stateChangeSeq) ||
     !isWorkerState(value.state) ||
     !isOptionalString(value.lastError) ||
+    !isOptionalAttemptHistory(value.attemptHistory, value.kind) ||
     (value.sourceCheckpoint !== undefined &&
       !isSourceCheckpoint(value.sourceCheckpoint)) ||
     (value.result !== undefined && !isWorkerResult(value.result)) ||
@@ -437,6 +493,31 @@ export function refreshRunState(run: WorkflowRun): void {
   run.updatedAt = new Date().toISOString();
 }
 
+export function createReplacementWorker(
+  existing: WorkerRecord,
+  attempt: number,
+  sourceCheckpoint: SourceCheckpoint,
+): WorkerRecord {
+  if (!existing.definition) {
+    throw new Error(
+      `Workflow worker ${existing.kind} has no persisted definition for retry.`,
+    );
+  }
+
+  return {
+    kind: existing.kind,
+    roleId: existing.roleId ?? existing.kind,
+    attempt,
+    definition: existing.definition,
+    attemptHistory: [
+      ...(existing.attemptHistory ?? []),
+      createAttemptEvidence(existing),
+    ],
+    sourceCheckpoint,
+    state: "launching",
+  };
+}
+
 export function enqueueWorkflowNotification(
   run: WorkflowRun,
   notification: {
@@ -542,6 +623,7 @@ export function summarizeWorkers(
           paneId: worker.paneId,
           error: worker.lastError,
           capturedAt: worker.result?.capturedAt,
+          attemptHistory: worker.attemptHistory,
           sourceCheckpoint: worker.sourceCheckpoint,
           staleDetails: worker.staleDetails,
           closedAt: worker.closedAt,
@@ -559,6 +641,29 @@ function isStaleWorkerDetails(value: unknown): value is StaleWorkerDetails {
     isSourceCheckpoint(value.current) &&
     isNonEmptyString(value.reason)
   );
+}
+
+function createAttemptEvidence(existing: WorkerRecord): WorkerAttemptEvidence {
+  if (!existing.definition) {
+    throw new Error(
+      `Workflow worker ${existing.kind} has no persisted definition for retry.`,
+    );
+  }
+
+  return {
+    attempt: existing.attempt,
+    definition: existing.definition,
+    sourceCheckpoint: existing.sourceCheckpoint,
+    agentName: existing.agentName,
+    tabId: existing.tabId,
+    paneId: existing.paneId,
+    state: existing.state,
+    lastError: existing.lastError,
+    result: existing.result,
+    staleDetails: existing.staleDetails,
+    closedAt: existing.closedAt,
+    cleanupError: existing.cleanupError,
+  };
 }
 
 function isOptionalNotificationArray(value: unknown): boolean {

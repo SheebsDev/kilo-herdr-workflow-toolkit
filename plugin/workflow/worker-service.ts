@@ -8,6 +8,7 @@ import { createAgentName } from "./model.ts";
 import type {
   SourceCheckpoint,
   WorkerDefinition,
+  WorkerAttemptEvidence,
   WorkerKind,
   WorkerRecord,
   WorkerState,
@@ -229,6 +230,7 @@ export async function spawnWorker(
       roleId: kind,
       attempt,
       definition,
+      attemptHistory: run.workers[kind].attemptHistory,
       sourceCheckpoint,
       agentName,
       tabId,
@@ -376,19 +378,25 @@ export async function promptWorker(
   return agent.stateChangeSeq + requiredTransitions;
 }
 
+export interface WorkerErrorRecordOptions {
+  definition?: WorkerDefinition;
+  sourceCheckpoint?: SourceCheckpoint;
+  attemptHistory?: WorkerAttemptEvidence[];
+}
+
 export function workerErrorRecord(
   kind: WorkerKind,
   attempt: number,
   error: unknown,
-  definition?: WorkerDefinition,
-  sourceCheckpoint?: SourceCheckpoint,
+  options: WorkerErrorRecordOptions = {},
 ): WorkerRecord {
   if (error instanceof WorkerLaunchError) {
     return {
       ...error.worker,
       roleId: kind,
-      definition,
-      sourceCheckpoint,
+      definition: options.definition,
+      attemptHistory: options.attemptHistory,
+      sourceCheckpoint: options.sourceCheckpoint,
     };
   }
 
@@ -396,8 +404,9 @@ export function workerErrorRecord(
     kind,
     roleId: kind,
     attempt,
-    definition,
-    sourceCheckpoint,
+    definition: options.definition,
+    attemptHistory: options.attemptHistory,
+    sourceCheckpoint: options.sourceCheckpoint,
     state: "error",
     lastError: errorMessage(error),
   };

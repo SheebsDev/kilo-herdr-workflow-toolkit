@@ -2,6 +2,7 @@ import type { Plugin } from "@kilocode/plugin";
 import { tool } from "@kilocode/plugin/tool";
 
 import {
+  createReplacementWorker,
   isWorkerKind,
   refreshRunState,
   summarizeWorkers,
@@ -175,7 +176,11 @@ If no run ID is supplied, the most recently created workflow run is used.
                   });
 
                   worker.state = status.state;
-                  worker.lastError = status.error;
+                  if (status.error !== undefined) {
+                    worker.lastError = status.error;
+                  } else if (!worker.result) {
+                    worker.lastError = undefined;
+                  }
                   if (status.stateChangeSeq !== undefined) {
                     worker.stateChangeSeq = status.stateChangeSeq;
                   }
@@ -185,15 +190,10 @@ If no run ID is supplied, the most recently created workflow run is used.
                   }
 
                   return {
+                    ...summarizeWorkers(run)[kind],
                     kind,
-                    state: status.state,
-                    tabId: worker.tabId,
-                    paneId: worker.paneId,
-                    agentName: worker.agentName,
-                    attempt: worker.attempt,
-                    error: status.error,
+                    error: status.error ?? worker.lastError,
                     output: status.output,
-                    cleanupError: worker.cleanupError,
                   };
                 }),
               );
@@ -339,7 +339,8 @@ but still return its current findings.
 Restart a failed, stuck, stopped, or unsatisfactory workflow worker.
 
 The existing worker tab is closed if it still exists, then a fresh Herdr tab
-and fresh Kilo Code session are created with the worker's original objective.
+and fresh session for the worker's persisted agent kind are created with the
+original objective and methodology snapshot.
 `,
         args: {
           runId: tool.schema
@@ -381,6 +382,12 @@ and fresh Kilo Code session are created with the worker's original objective.
               }
 
               const nextAttempt = existing.attempt + 1;
+              const replacement = createReplacementWorker(
+                existing,
+                nextAttempt,
+                sourceCheckpoint,
+              );
+              run.workers[args.worker] = replacement;
 
               try {
                 run.workers[args.worker] = await spawnWorker({
@@ -397,8 +404,11 @@ and fresh Kilo Code session are created with the worker's original objective.
                   args.worker,
                   nextAttempt,
                   error,
-                  existing.definition,
-                  sourceCheckpoint,
+                  {
+                    definition: replacement.definition,
+                    sourceCheckpoint: replacement.sourceCheckpoint,
+                    attemptHistory: replacement.attemptHistory,
+                  },
                 );
               }
 
@@ -473,8 +483,10 @@ async function launchWorkers(
           kind,
           1,
           error,
-          run.workers[kind].definition,
-          run.workers[kind].sourceCheckpoint,
+          {
+            definition: run.workers[kind].definition,
+            sourceCheckpoint: run.workers[kind].sourceCheckpoint,
+          },
         );
       }
 

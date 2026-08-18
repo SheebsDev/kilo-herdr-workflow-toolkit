@@ -7,12 +7,14 @@ import test from "node:test";
 
 import {
   createAgentName,
+  createReplacementWorker,
   deriveRunState,
   enqueueWorkflowNotification,
   isAgentKind,
   isLegacyAgentName,
   isRoleId,
   isRoleOrder,
+  summarizeWorkers,
   isWorkflowRun,
 } from "./model.ts";
 import type { WorkflowRunV2, WorkerRecord } from "./model.ts";
@@ -259,6 +261,92 @@ test("stale workers block completion and arbitrary role IDs name agents safely",
     ),
     true,
   );
+});
+
+test("replacement workers retain the run snapshot and receive a fresh checkpoint", () => {
+  const run = createVersionTwoRun();
+  const existing = run.workers.tests;
+  const replacementCheckpoint = {
+    ...existing.sourceCheckpoint!,
+    capturedAt: new Date(Date.now() + 1_000).toISOString(),
+    unstagedTrackedDiffSha256: "c".repeat(64),
+  };
+
+  existing.definition = {
+    ...existing.definition!,
+    agentKind: "codex",
+  };
+  existing.state = "stale";
+  existing.agentName = "wf-test-tests-1";
+  existing.result = {
+    output: "stale evidence",
+    capturedAt: existing.sourceCheckpoint!.capturedAt,
+  };
+  existing.staleDetails = {
+    baseline: existing.sourceCheckpoint!,
+    current: replacementCheckpoint,
+    reason: "Tracked source changed during tests attempt.",
+  };
+
+  const replacement = createReplacementWorker(
+    existing,
+    existing.attempt + 1,
+    replacementCheckpoint,
+  );
+
+  assert.equal(replacement.attempt, 2);
+  assert.equal(replacement.state, "launching");
+  assert.equal(replacement.definition, existing.definition);
+  assert.equal(replacement.definition?.agentKind, "codex");
+  assert.equal(replacement.sourceCheckpoint, replacementCheckpoint);
+  assert.equal(replacement.result, undefined);
+  assert.equal(replacement.staleDetails, undefined);
+  assert.equal(replacement.attemptHistory?.length, 1);
+  assert.equal(replacement.attemptHistory?.[0].attempt, existing.attempt);
+  assert.equal(replacement.attemptHistory?.[0].result?.output, "stale evidence");
+  assert.deepEqual(
+    replacement.attemptHistory?.[0].staleDetails,
+    existing.staleDetails,
+  );
+});
+
+test("worker summaries expose selected agent enforcement and stale evidence", () => {
+  const run = createVersionTwoRun();
+  const worker = run.workers.tests;
+  const baseline = worker.sourceCheckpoint!;
+  const current = {
+    ...baseline,
+    unstagedTrackedDiffSha256: "c".repeat(64),
+  };
+
+  worker.definition = {
+    ...worker.definition!,
+    agentKind: "codex",
+    enforcement: {
+      profile: "codex-read-only",
+      strength: "strong",
+      allowsWrites: false,
+    },
+  };
+  worker.state = "stale";
+  worker.staleDetails = {
+    baseline,
+    current,
+    reason: "Tracked source changed during tests attempt.",
+  };
+  worker.result = {
+    output: "bounded stale evidence",
+    capturedAt: current.capturedAt,
+  };
+
+  const summary = summarizeWorkers(run).tests;
+
+  assert.equal(summary.agentKind, "codex");
+  assert.deepEqual(summary.enforcement, worker.definition.enforcement);
+  assert.equal(summary.attemptHistory, undefined);
+  assert.deepEqual(summary.sourceCheckpoint, baseline);
+  assert.deepEqual(summary.staleDetails, worker.staleDetails);
+  assert.doesNotThrow(() => JSON.stringify(summary));
 });
 
 function createVersionTwoRun(): WorkflowRunV2 {

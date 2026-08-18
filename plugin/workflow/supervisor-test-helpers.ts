@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { SourceCheckpoint, WorkflowRunV2 } from "./model.ts";
 
@@ -53,6 +53,24 @@ function createWorker(
     kind,
     roleId: kind,
     attempt: 0,
+    definition: {
+      roleId: kind,
+      label: kind,
+      agentKind: "kilo",
+      skill: {
+        id: "test-verification",
+        hash: createHash("sha256")
+          .update("Test methodology.", "utf8")
+          .digest("hex"),
+        body: "Test methodology.",
+      },
+      capabilityProfile: "test-profile",
+      enforcement: {
+        profile: "test-profile",
+        strength: "moderate",
+        allowsWrites: true,
+      },
+    },
     state: "launching" as const,
     sourceCheckpoint,
   };
