@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 import { createAgentName } from "./model.ts";
 import type {
+  SourceCheckpoint,
   WorkerDefinition,
   WorkerKind,
   WorkerRecord,
@@ -44,6 +45,7 @@ interface SpawnWorkerOptions {
   projectRoot: string;
   kind: WorkerKind;
   attempt: number;
+  sourceCheckpoint?: SourceCheckpoint;
   signal?: AbortSignal;
   additionalInstruction?: string;
 }
@@ -89,6 +91,13 @@ export async function spawnWorker(
   const definition = run.workers[kind].definition;
   if (!definition) {
     throw new Error(`Workflow worker ${kind} has no persisted definition.`);
+  }
+  const sourceCheckpoint =
+    options.sourceCheckpoint ?? run.workers[kind].sourceCheckpoint;
+  if (!sourceCheckpoint) {
+    throw new Error(
+      `Workflow worker ${kind} attempt ${attempt} has no source checkpoint.`,
+    );
   }
 
   const launchConfiguration = getWorkerLaunchConfiguration(
@@ -220,6 +229,7 @@ export async function spawnWorker(
       roleId: kind,
       attempt,
       definition,
+      sourceCheckpoint,
       agentName,
       tabId,
       paneId,
@@ -371,12 +381,14 @@ export function workerErrorRecord(
   attempt: number,
   error: unknown,
   definition?: WorkerDefinition,
+  sourceCheckpoint?: SourceCheckpoint,
 ): WorkerRecord {
   if (error instanceof WorkerLaunchError) {
     return {
       ...error.worker,
       roleId: kind,
       definition,
+      sourceCheckpoint,
     };
   }
 
@@ -385,6 +397,7 @@ export function workerErrorRecord(
     roleId: kind,
     attempt,
     definition,
+    sourceCheckpoint,
     state: "error",
     lastError: errorMessage(error),
   };

@@ -24,6 +24,7 @@ import {
   spawnWorker,
   workerErrorRecord,
 } from "./workflow/worker-service.ts";
+import { captureSourceCheckpoint } from "./workflow/source-checkpoint.ts";
 import { WorkflowSupervisor } from "./workflow/supervisor.ts";
 
 const workflowPlugin: Plugin = async ({ client, directory, worktree }) => {
@@ -95,6 +96,13 @@ Do not call this while implementation files are still actively changing.
             ),
             workspaceId: requireHerdrWorkspace(),
           });
+          const sourceCheckpoint = await captureSourceCheckpoint(
+            projectRoot,
+            context.abort,
+          );
+          for (const kind of WORKER_ORDER) {
+            run.workers[kind].sourceCheckpoint = sourceCheckpoint;
+          }
 
           await saveNewRun(projectRoot, run);
           await withRunLock(
@@ -357,6 +365,10 @@ and fresh Kilo Code session are created with the worker's original objective.
             context.abort,
             async (run) => {
               const existing = run.workers[args.worker];
+              const sourceCheckpoint = await captureSourceCheckpoint(
+                projectRoot,
+                context.abort,
+              );
               supervisor.cancelWorker(run.id, args.worker);
 
               if (existing.tabId) {
@@ -376,16 +388,18 @@ and fresh Kilo Code session are created with the worker's original objective.
                   projectRoot,
                   kind: args.worker,
                   attempt: nextAttempt,
+                  sourceCheckpoint,
                   signal: context.abort,
                   additionalInstruction: args.additionalInstruction,
                 });
               } catch (error) {
-                   run.workers[args.worker] = workerErrorRecord(
-                     args.worker,
-                     nextAttempt,
-                     error,
-                     existing.definition,
-                   );
+                run.workers[args.worker] = workerErrorRecord(
+                  args.worker,
+                  nextAttempt,
+                  error,
+                  existing.definition,
+                  sourceCheckpoint,
+                );
               }
 
               try {
@@ -451,6 +465,7 @@ async function launchWorkers(
           projectRoot,
           kind,
           attempt: 1,
+          sourceCheckpoint: run.workers[kind].sourceCheckpoint,
           signal,
         });
       } catch (error) {
@@ -459,6 +474,7 @@ async function launchWorkers(
           1,
           error,
           run.workers[kind].definition,
+          run.workers[kind].sourceCheckpoint,
         );
       }
 
