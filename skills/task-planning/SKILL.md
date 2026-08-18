@@ -27,21 +27,17 @@ A Task Card should be small enough that its implementation and resulting diff ar
 
 # Preserve the Plan
 
-The implementation plan remains the higher-level source of context and truth
+The implementation plan is read-only source context and must not be modified, appended to, renamed, or deleted.
 
-Task Cards are a decomposition of that plan, not replacements for it.
+Task Cards are separate files derived from that plan. Do not place Task Cards inside the source plan.
 
-The final planning document should preserve:
+Derive the feature folder from the source plan filename by removing its `.md` extension and any leading numeric timestamp plus hyphen. For example:
 
-1. feature goal
-2. relevant architectural context
-3. important decisions
-4. implementation strategy
-5. Task Cards derived from that strategy
+`.kilo/plans/1786849990968-phase-1-multi-agent-workers.md` becomes `.kilo/plans/phase-1-multi-agent-workers/`.
 
-Do not duplicate the entire plan inside every Task Card.
+Create one file per Task Card in that folder, named `TASK-XXX-short-action-title.md`.
 
-Task Cards should contain enough context to be executable while referring back to the overall plan for broader architectural reasoning.
+Do not duplicate the entire plan inside every Task Card. Cards should contain enough context to be executable while referring back to the source plan for broader architectural reasoning.
 
 # When to Create Task Cards
 
@@ -421,43 +417,9 @@ If a card becomes too large, split it.
 
 If two cards are trivial and tightly coupled, combine them.
 
-# Final Plan Structure
+# Output Verification
 
-When finished, organize the planning document approximately as:
-
-# [Feature Name]
-
-## Goal
-
-High-level feature outcome.
-
-## Context
-
-Relevant current-system context.
-
-## Decisions
-
-Important architectural or product decisions.
-
-## Implementation Approach
-
-The overall implementation strategy.
-
-## Task Overview
-
-A concise ordered summary such as:
-
-| Task     | Description                     | Depends On         |
-| -------- | ------------------------------- | ------------------ |
-| TASK-001 | Introduce cache contract        | None               |
-| TASK-002 | Implement local cache           | TASK-001           |
-| TASK-003 | Integrate cache with repository | TASK-001, TASK-002 |
-
-Keep the table concise.
-
-## Task Cards
-
-Full Task Cards follow.
+Before finalizing, verify that every Task Card is a separate file in the derived feature folder and that the source plan has not changed.
 
 # Reviewing the Decomposition
 
