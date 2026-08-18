@@ -6,10 +6,15 @@ import {
   WORKER_ORDER,
 } from "./model.ts";
 import type {
+  SourceCheckpoint,
   WorkerKind,
   WorkerRecord,
   WorkflowRun,
 } from "./model.ts";
+import {
+  captureSourceCheckpoint,
+  sourceCheckpointsEqual,
+} from "./source-checkpoint.ts";
 import {
   listRuns,
   loadRun,
@@ -315,11 +320,75 @@ export class WorkflowSupervisor {
             return "error" as const;
           }
 
+          const baseline = worker.sourceCheckpoint;
+
+          if (!baseline) {
+            worker.state = "error";
+            worker.lastError = `Could not validate the completed ${kind} report because its source checkpoint is missing.`;
+            enqueueWorkflowNotification(run, {
+              key: workerNotificationKey(worker, "error"),
+              kind: "worker-error",
+              message: `${kind} attempt ${attempt} completed, but its source checkpoint was missing. Its tab was left open.`,
+            });
+            refreshRunState(run);
+            await saveRun(this.projectRoot, run);
+            return "error" as const;
+          }
+
+          let current: SourceCheckpoint;
+
+          try {
+            current = await captureSourceCheckpoint(this.projectRoot, signal);
+          } catch (error) {
+            if (signal.aborted) {
+              throw error;
+            }
+
+            worker.state = "error";
+            worker.lastError = `Could not capture the current source checkpoint for the completed ${kind} report: ${errorMessage(error)}`;
+            enqueueWorkflowNotification(run, {
+              key: workerNotificationKey(worker, "error"),
+              kind: "worker-error",
+              message: `${kind} attempt ${attempt} completed, but its current source checkpoint could not be captured. Its tab was left open: ${worker.lastError}`,
+            });
+            refreshRunState(run);
+            await saveRun(this.projectRoot, run);
+            return "error" as const;
+          }
+
+          const output = boundCapturedOutput(inspection.output);
+
+          if (!sourceCheckpointsEqual(baseline, current)) {
+            const reason = describeCheckpointMismatch(kind, baseline, current);
+
+            worker.state = "stale";
+            worker.result = {
+              output,
+              capturedAt: new Date().toISOString(),
+            };
+            worker.staleDetails = {
+              baseline,
+              current,
+              reason,
+            };
+            worker.lastError = reason;
+            worker.cleanupError = undefined;
+            enqueueWorkflowNotification(run, {
+              key: workerNotificationKey(worker, "stale"),
+              kind: "worker-stale",
+              message: `${kind} attempt ${attempt} produced a stale report: ${reason}`,
+            });
+            refreshRunState(run);
+            await saveRun(this.projectRoot, run);
+            return "complete" as const;
+          }
+
           worker.result = {
-            output: boundCapturedOutput(inspection.output),
+            output,
             capturedAt: new Date().toISOString(),
           };
           worker.lastError = undefined;
+          worker.staleDetails = undefined;
           worker.cleanupError = undefined;
           refreshRunState(run);
           await saveRun(this.projectRoot, run);
@@ -545,7 +614,12 @@ export class WorkflowSupervisor {
 
         const reportsCollected = WORKER_ORDER.every((kind) => {
           const worker = run.workers[kind];
-          return Boolean(worker.result) || worker.state === "stopped";
+          return (
+            (Boolean(worker.result) &&
+              worker.state !== "stale" &&
+              worker.state !== "invalid-report") ||
+            worker.state === "stopped"
+          );
         });
 
         if (run.state === "reviews-complete" && reportsCollected) {
@@ -730,10 +804,30 @@ function boundCapturedOutput(output: string): string {
     return output;
   }
 
-  return [
-    "[Earlier terminal output was truncated before persistence.]",
-    output.slice(-MAX_CAPTURED_OUTPUT_LENGTH),
-  ].join("\n");
+  const marker = "[Earlier terminal output was truncated before persistence.]\n";
+  return marker + output.slice(-(MAX_CAPTURED_OUTPUT_LENGTH - marker.length));
+}
+
+function describeCheckpointMismatch(
+  kind: WorkerKind,
+  baseline: SourceCheckpoint,
+  current: SourceCheckpoint,
+): string {
+  const changed: string[] = [];
+
+  if (baseline.headId !== current.headId) {
+    changed.push("HEAD");
+  }
+  if (baseline.stagedDiffSha256 !== current.stagedDiffSha256) {
+    changed.push("staged tracked diff");
+  }
+  if (
+    baseline.unstagedTrackedDiffSha256 !== current.unstagedTrackedDiffSha256
+  ) {
+    changed.push("unstaged tracked diff");
+  }
+
+  return `Tracked source changed during ${kind} attempt; changed checkpoint fields: ${changed.join(", ") || "unknown"}.`;
 }
 
 function buildWakePrompt(run: WorkflowRun, messages: string[]): string {
