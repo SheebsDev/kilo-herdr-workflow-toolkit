@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   mkdir,
   open,
@@ -27,6 +27,7 @@ import type {
   WorkflowRun,
   WorkflowRunV2,
 } from "./model.ts";
+import { loadBundledSkill } from "./skill-loader.ts";
 
 const CURRENT_RUN_ID_PATTERN =
   /^run-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -291,17 +292,11 @@ function workerDefinition(roleId: string): WorkerDefinition {
     throw new Error(`Unknown built-in workflow role "${roleId}".`);
   }
 
-  const body = `Bundled ${builtIn.skillId} reviewer methodology.`;
-
   return {
     roleId: builtIn.roleId,
     label: builtIn.label,
     agentKind: "kilo",
-    skill: {
-      id: builtIn.skillId,
-      hash: createHash("sha256").update(body, "utf8").digest("hex"),
-      body,
-    },
+    skill: loadBundledSkill(builtIn.skillId),
     capabilityProfile: "kilo-default",
     enforcement: {
       profile: "kilo-default",

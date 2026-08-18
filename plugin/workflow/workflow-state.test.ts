@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -234,6 +235,10 @@ test("version-two model validates generic roles and rejects malformed metadata",
   const invalidCheckpoint = JSON.parse(JSON.stringify(run));
   invalidCheckpoint.workers.tests.sourceCheckpoint.stagedDiffSha256 = "bad";
   assert.equal(isWorkflowRun(invalidCheckpoint), false);
+
+  const invalidSkillSnapshot = JSON.parse(JSON.stringify(run));
+  invalidSkillSnapshot.workers.tests.definition.skill.body = "tampered";
+  assert.equal(isWorkflowRun(invalidSkillSnapshot), false);
 });
 
 test("stale workers block completion and arbitrary role IDs name agents safely", () => {
@@ -306,10 +311,12 @@ function createVersionTwoWorker(
       roleId,
       label: roleId,
       agentKind: "kilo",
-      skill: {
-        id: "test-verification",
-        hash: "c".repeat(64),
-        body: "Review the implementation and verify it.",
+       skill: {
+         id: "test-verification",
+         hash: createHash("sha256")
+           .update("Review the implementation and verify it.", "utf8")
+           .digest("hex"),
+         body: "Review the implementation and verify it.",
       },
       capabilityProfile: "review-read-only",
       enforcement: {

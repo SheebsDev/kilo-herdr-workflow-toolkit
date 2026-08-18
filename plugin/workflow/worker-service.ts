@@ -24,47 +24,17 @@ const WORKFLOW_LAUNCHER_DIRECTORY = path.resolve(
 
 interface WorkerSpec {
   tabLabel: string;
-  instructions: string;
 }
 
 const WORKER_SPECS: Record<WorkerKind, WorkerSpec> = {
   tests: {
     tabLabel: "Tests",
-    instructions: `
-Independently verify the implementation.
-
-Run the relevant tests, builds, linters, type checks, static analysis,
-or other project verification appropriate to the changed code.
-
-Evaluate whether the Task Card acceptance criteria are adequately verified.
-
-Do not edit production or test source files to make checks pass.
-Generated build/test artifacts are fine.
-`,
   },
   "code-review": {
     tabLabel: "Code Review",
-    instructions: `
-Perform an independent engineering review of the implementation.
-
-Focus on correctness, regressions, edge cases, maintainability,
-architectural violations, lifecycle problems, error handling,
-and unnecessary complexity.
-
-Do not modify files.
-`,
   },
   readability: {
     tabLabel: "Readability",
-    instructions: `
-Review the implementation specifically as a human code reviewer.
-
-Focus on naming, control flow, unnecessary abstraction,
-jargon-heavy code, difficult-to-follow structure, misleading comments,
-and anything that makes the change harder to understand or maintain.
-
-Do not modify files.
-`,
   },
 };
 
@@ -658,12 +628,16 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function buildWorkerPrompt(
+export function buildWorkerPrompt(
   run: WorkflowRun,
   kind: WorkerKind,
   additionalInstruction?: string,
 ): string {
-  const spec = WORKER_SPECS[kind];
+  const definition = run.workers[kind].definition;
+  if (!definition) {
+    throw new Error(`Workflow worker ${kind} has no persisted definition.`);
+  }
+
   const taskCard = run.taskCardPath
     ? run.taskCardPath
     : "No explicit Task Card path was supplied. Use the task description and current implementation diff.";
@@ -685,7 +659,8 @@ The implementation has reached a stable review checkpoint.
 Inspect the current working tree, git status, git diff, relevant surrounding
 code, and the Task Card when one is available.
 
-${spec.instructions}
+METHODOLOGY
+${definition.skill.body}
 
 Do not expand the scope of the implementation.
 

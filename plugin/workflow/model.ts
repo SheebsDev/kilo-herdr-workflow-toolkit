@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const AGENT_KINDS = ["kilo", "claude", "codex"] as const;
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
@@ -244,7 +246,9 @@ export function isSkillSnapshot(value: unknown): value is SkillSnapshot {
     isNonEmptyString(value.id) &&
     isSha256(value.hash) &&
     typeof value.body === "string" &&
-    value.body.trim().length > 0
+    value.body.trim().length > 0 &&
+    createHash("sha256").update(value.body, "utf8").digest("hex") ===
+      value.hash
   );
 }
 
