@@ -1,10 +1,40 @@
-export const WORKER_ORDER = [
+export const AGENT_KINDS = ["kilo", "claude", "codex"] as const;
+
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
+export const ROLE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+
+export const BUILT_IN_ROLE_ORDER = [
   "tests",
   "code-review",
   "readability",
 ] as const;
 
-export type WorkerKind = (typeof WORKER_ORDER)[number];
+export type BuiltInRoleId = (typeof BUILT_IN_ROLE_ORDER)[number];
+
+// These aliases keep the Phase 1 business-level worker API separate from the
+// generic role IDs used by persisted version-2 records.
+export const WORKER_ORDER = BUILT_IN_ROLE_ORDER;
+export type WorkerKind = BuiltInRoleId;
+export type RoleId = string;
+
+export const BUILT_IN_ROLE_DEFINITIONS = [
+  {
+    roleId: "tests",
+    label: "Tests",
+    skillId: "test-verification",
+  },
+  {
+    roleId: "code-review",
+    label: "Code Review",
+    skillId: "code-review",
+  },
+  {
+    roleId: "readability",
+    label: "Readability",
+    skillId: "readability-review",
+  },
+] as const;
 
 export const WORKER_STATES = [
   "launching",
@@ -15,6 +45,8 @@ export const WORKER_STATES = [
   "unknown",
   "stopped",
   "error",
+  "stale",
+  "invalid-report",
 ] as const;
 
 export type WorkerState = (typeof WORKER_STATES)[number];
@@ -33,15 +65,64 @@ export type RunState = (typeof RUN_STATES)[number];
 export const WORKFLOW_NOTIFICATION_KINDS = [
   "worker-blocked",
   "worker-error",
+  "worker-stale",
+  "worker-invalid-report",
   "reviews-complete",
 ] as const;
 
 export type WorkflowNotificationKind =
   (typeof WORKFLOW_NOTIFICATION_KINDS)[number];
 
+export const ENFORCEMENT_STRENGTHS = ["strong", "moderate", "weak"] as const;
+
+export type EnforcementStrength = (typeof ENFORCEMENT_STRENGTHS)[number];
+
+export interface SkillSnapshot {
+  id: string;
+  hash: string;
+  body: string;
+}
+
+export interface EnforcementMetadata {
+  profile: string;
+  strength: EnforcementStrength;
+  allowsWrites: boolean;
+}
+
+export interface WorkerDefinition {
+  roleId: RoleId;
+  label: string;
+  agentKind: AgentKind;
+  skill: SkillSnapshot;
+  capabilityProfile: string;
+  enforcement: EnforcementMetadata;
+}
+
+export interface OriginMetadata {
+  workspaceId: string;
+  paneId: string;
+  coordinatorKind: AgentKind;
+  sessionId?: string;
+}
+
+export interface SourceCheckpoint {
+  headId?: string;
+  stagedDiffSha256: string;
+  unstagedTrackedDiffSha256: string;
+  capturedAt: string;
+}
+
+export interface StaleWorkerDetails {
+  baseline: SourceCheckpoint;
+  current: SourceCheckpoint;
+  reason: string;
+}
+
 export interface WorkerResult {
+  // `output` is the bounded raw worker output retained for audit evidence.
   output: string;
   capturedAt: string;
+  report?: unknown;
 }
 
 export interface WorkflowNotification {
@@ -54,8 +135,12 @@ export interface WorkflowNotification {
 }
 
 export interface WorkerRecord {
-  kind: WorkerKind;
+  // `kind` is the role ID in persisted records. The name remains as a small
+  // compatibility surface for the Phase 1 worker services.
+  kind: RoleId;
+  roleId?: RoleId;
   attempt: number;
+  definition?: WorkerDefinition;
   agentName?: string;
   tabId?: string;
   paneId?: string;
@@ -63,46 +148,65 @@ export interface WorkerRecord {
   stateChangeSeq?: number;
   state: WorkerState;
   lastError?: string;
+  sourceCheckpoint?: SourceCheckpoint;
   result?: WorkerResult;
+  staleDetails?: StaleWorkerDetails;
   closedAt?: string;
   cleanupError?: string;
 }
 
+export type WorkerMap = Record<RoleId, WorkerRecord>;
+
 export interface WorkflowRun {
-  version: 1;
+  version: 1 | 2;
   id: string;
   task: string;
   taskCardPath?: string;
   originSessionId?: string;
-  herdrWorkspaceId: string;
+  herdrWorkspaceId?: string;
   createdAt: string;
   updatedAt: string;
   state: RunState;
-  workers: Record<WorkerKind, WorkerRecord>;
+  workerOrder?: RoleId[];
+  origin?: OriginMetadata;
+  workers: WorkerMap;
   nextNotificationSequence?: number;
   notifications?: WorkflowNotification[];
 }
 
-const WORKER_AGENT_SUFFIX: Record<WorkerKind, string> = {
-  tests: "tests",
-  "code-review": "review",
-  readability: "readable",
-};
+export interface WorkflowRunV2 extends WorkflowRun {
+  version: 2;
+  workerOrder: RoleId[];
+  origin: OriginMetadata;
+}
 
 export interface WorkerSummary {
+  roleId: RoleId;
   state: WorkerState;
   attempt: number;
+  agentKind?: AgentKind;
+  enforcement?: EnforcementMetadata;
   agentName?: string;
   tabId?: string;
   paneId?: string;
   error?: string;
   capturedAt?: string;
+  sourceCheckpoint?: SourceCheckpoint;
+  staleDetails?: StaleWorkerDetails;
   closedAt?: string;
   cleanupError?: string;
 }
 
+export function isAgentKind(value: unknown): value is AgentKind {
+  return AGENT_KINDS.some((kind) => kind === value);
+}
+
+export function isRoleId(value: unknown): value is RoleId {
+  return typeof value === "string" && ROLE_ID_PATTERN.test(value);
+}
+
 export function isWorkerKind(value: unknown): value is WorkerKind {
-  return WORKER_ORDER.some((kind) => kind === value);
+  return BUILT_IN_ROLE_ORDER.some((kind) => kind === value);
 }
 
 export function isWorkerState(value: unknown): value is WorkerState {
@@ -119,8 +223,174 @@ export function isWorkflowNotificationKind(
   return WORKFLOW_NOTIFICATION_KINDS.some((kind) => kind === value);
 }
 
+export function isEnforcementStrength(
+  value: unknown,
+): value is EnforcementStrength {
+  return ENFORCEMENT_STRENGTHS.some((strength) => strength === value);
+}
+
+export function isRoleOrder(value: unknown): value is RoleId[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(isRoleId) &&
+    new Set(value).size === value.length
+  );
+}
+
+export function isSkillSnapshot(value: unknown): value is SkillSnapshot {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.id) &&
+    isSha256(value.hash) &&
+    typeof value.body === "string" &&
+    value.body.trim().length > 0
+  );
+}
+
+export function isEnforcementMetadata(
+  value: unknown,
+): value is EnforcementMetadata {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.profile) &&
+    isEnforcementStrength(value.strength) &&
+    typeof value.allowsWrites === "boolean"
+  );
+}
+
+export function isWorkerDefinition(
+  value: unknown,
+): value is WorkerDefinition {
+  return (
+    isRecord(value) &&
+    isRoleId(value.roleId) &&
+    isNonEmptyString(value.label) &&
+    isAgentKind(value.agentKind) &&
+    isSkillSnapshot(value.skill) &&
+    isNonEmptyString(value.capabilityProfile) &&
+    isEnforcementMetadata(value.enforcement)
+  );
+}
+
+export function isOriginMetadata(value: unknown): value is OriginMetadata {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.workspaceId) &&
+    isNonEmptyString(value.paneId) &&
+    isAgentKind(value.coordinatorKind) &&
+    isOptionalString(value.sessionId)
+  );
+}
+
+export function isSourceCheckpoint(
+  value: unknown,
+): value is SourceCheckpoint {
+  return (
+    isRecord(value) &&
+    isOptionalNonEmptyString(value.headId) &&
+    isSha256(value.stagedDiffSha256) &&
+    isSha256(value.unstagedTrackedDiffSha256) &&
+    isIsoDate(value.capturedAt)
+  );
+}
+
+export function isWorkerResult(value: unknown): value is WorkerResult {
+  return (
+    isRecord(value) &&
+    typeof value.output === "string" &&
+    isIsoDate(value.capturedAt)
+  );
+}
+
+export function isWorkerRecord(value: unknown): value is WorkerRecord {
+  if (
+    !isRecord(value) ||
+    !isRoleId(value.kind) ||
+    (value.roleId !== undefined && value.roleId !== value.kind) ||
+    !Number.isInteger(value.attempt) ||
+    (value.attempt as number) < 0 ||
+    (value.definition !== undefined &&
+      (!isWorkerDefinition(value.definition) ||
+        value.definition.roleId !== value.kind)) ||
+    !isOptionalString(value.agentName) ||
+    !isOptionalString(value.tabId) ||
+    !isOptionalString(value.paneId) ||
+    !isOptionalNonNegativeInteger(value.pendingPromptStartSeq) ||
+    !isOptionalNonNegativeInteger(value.stateChangeSeq) ||
+    !isWorkerState(value.state) ||
+    !isOptionalString(value.lastError) ||
+    (value.sourceCheckpoint !== undefined &&
+      !isSourceCheckpoint(value.sourceCheckpoint)) ||
+    (value.result !== undefined && !isWorkerResult(value.result)) ||
+    (value.staleDetails !== undefined &&
+      !isStaleWorkerDetails(value.staleDetails)) ||
+    !isOptionalIsoDate(value.closedAt) ||
+    !isOptionalString(value.cleanupError)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isWorkerMap(
+  value: unknown,
+  workerOrder?: readonly RoleId[],
+): value is WorkerMap {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const keys = Object.keys(value);
+  const order = workerOrder ?? keys;
+
+  return (
+    isRoleOrder(order) &&
+    keys.length === order.length &&
+    order.every(
+      (roleId) =>
+        Object.prototype.hasOwnProperty.call(value, roleId) &&
+        isWorkerRecord(value[roleId]) &&
+        value[roleId].kind === roleId,
+    )
+  );
+}
+
+export function isWorkflowRun(value: unknown): value is WorkflowRunV2 {
+  if (
+    !isRecord(value) ||
+    value.version !== 2 ||
+    !isNonEmptyString(value.id) ||
+    !isNonEmptyString(value.task) ||
+    !isIsoDate(value.createdAt) ||
+    !isIsoDate(value.updatedAt) ||
+    !isRunState(value.state) ||
+    !isRoleOrder(value.workerOrder) ||
+    !isOriginMetadata(value.origin) ||
+    !isWorkerMap(value.workers, value.workerOrder) ||
+    !isOptionalString(value.taskCardPath) ||
+    !isOptionalString(value.originSessionId) ||
+    !isOptionalString(value.herdrWorkspaceId) ||
+    !isOptionalPositiveInteger(value.nextNotificationSequence) ||
+    !isOptionalNotificationArray(value.notifications)
+  ) {
+    return false;
+  }
+
+  return value.workerOrder.every(
+    (roleId) => value.workers[roleId].definition !== undefined,
+  );
+}
+
 export function deriveRunState(run: WorkflowRun): RunState {
-  const states = WORKER_ORDER.map((kind) => run.workers[kind].state);
+  const workerOrder = run.workerOrder ?? WORKER_ORDER;
+
+  if (!isRoleOrder(workerOrder) || !isWorkerMap(run.workers, workerOrder)) {
+    throw new Error("Cannot derive workflow state from an invalid worker map.");
+  }
+
+  const states = workerOrder.map((roleId) => run.workers[roleId].state);
 
   if (states.every((state) => state === "stopped")) {
     return "stopped";
@@ -130,7 +400,13 @@ export function deriveRunState(run: WorkflowRun): RunState {
     return "error";
   }
 
-  if (states.some((state) => state === "blocked")) {
+  // Stale and invalid reports require coordinator action and must never count
+  // as completed reviews.
+  if (
+    states.some(
+      (state) => state === "blocked" || state === "stale" || state === "invalid-report",
+    )
+  ) {
     return "blocked";
   }
 
@@ -193,38 +469,170 @@ export function enqueueWorkflowNotification(
 
 export function createAgentName(
   runId: string,
-  kind: WorkerKind,
+  roleId: RoleId,
   attempt: number,
 ): string {
+  if (!isRoleId(roleId)) {
+    throw new Error(`Invalid workflow role ID "${roleId}".`);
+  }
+
+  if (!Number.isInteger(attempt) || attempt < 0) {
+    throw new Error(`Invalid workflow attempt "${attempt}".`);
+  }
+
   const runPrefix = runId
     .replace(/^run-/, "")
     .replaceAll("-", "")
     .slice(0, runId.length === 12 ? 8 : 12);
 
-  return `wf-${runPrefix}-${WORKER_AGENT_SUFFIX[kind]}-${attempt}`;
+  return `wf-${runPrefix}-${roleId}-${attempt}`;
+}
+
+export function isLegacyAgentName(
+  agentName: unknown,
+  runId: string,
+  roleId: RoleId,
+  attempt: number,
+): boolean {
+  const legacySuffix =
+    roleId === "tests"
+      ? "tests"
+      : roleId === "code-review"
+        ? "review"
+        : roleId === "readability"
+          ? "readable"
+          : undefined;
+
+  if (legacySuffix === undefined) {
+    return false;
+  }
+
+  const runPrefix = runId
+    .replace(/^run-/, "")
+    .replaceAll("-", "")
+    .slice(0, runId.length === 12 ? 8 : 12);
+
+  return agentName === `wf-${runPrefix}-${legacySuffix}-${attempt}`;
 }
 
 export function summarizeWorkers(
   run: WorkflowRun,
-): Record<WorkerKind, WorkerSummary> {
+): Record<RoleId, WorkerSummary> {
+  const workerOrder = run.workerOrder ?? WORKER_ORDER;
+
   return Object.fromEntries(
-    WORKER_ORDER.map((kind) => {
-      const worker = run.workers[kind];
+    workerOrder.map((roleId) => {
+      const worker = run.workers[roleId];
+      const definition = worker.definition;
 
       return [
-        kind,
+        roleId,
         {
+          roleId,
           state: worker.state,
           attempt: worker.attempt,
+          agentKind: definition?.agentKind,
+          enforcement: definition?.enforcement,
           agentName: worker.agentName,
           tabId: worker.tabId,
           paneId: worker.paneId,
           error: worker.lastError,
           capturedAt: worker.result?.capturedAt,
+          sourceCheckpoint: worker.sourceCheckpoint,
+          staleDetails: worker.staleDetails,
           closedAt: worker.closedAt,
           cleanupError: worker.cleanupError,
         },
       ];
     }),
-  ) as Record<WorkerKind, WorkerSummary>;
+  ) as Record<RoleId, WorkerSummary>;
+}
+
+function isStaleWorkerDetails(value: unknown): value is StaleWorkerDetails {
+  return (
+    isRecord(value) &&
+    isSourceCheckpoint(value.baseline) &&
+    isSourceCheckpoint(value.current) &&
+    isNonEmptyString(value.reason)
+  );
+}
+
+function isOptionalNotificationArray(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+
+  if (!Array.isArray(value)) {
+    return false;
+  }
+
+  let previousSequence = 0;
+
+  for (const notification of value) {
+    if (
+      !isRecord(notification) ||
+      !Number.isInteger(notification.sequence) ||
+      (notification.sequence as number) <= previousSequence ||
+      !isNonEmptyString(notification.key) ||
+      !isWorkflowNotificationKind(notification.kind) ||
+      !isNonEmptyString(notification.message) ||
+      !isIsoDate(notification.createdAt) ||
+      !isOptionalIsoDate(notification.deliveredAt)
+    ) {
+      return false;
+    }
+
+    previousSequence = notification.sequence as number;
+  }
+
+  return true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOptionalNonEmptyString(value: unknown): value is string | undefined {
+  return value === undefined || isNonEmptyString(value);
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalIsoDate(value: unknown): value is string | undefined {
+  return value === undefined || isIsoDate(value);
+}
+
+function isOptionalPositiveInteger(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Number.isInteger(value) && (value as number) > 0)
+  );
+}
+
+function isOptionalNonNegativeInteger(
+  value: unknown,
+): value is number | undefined {
+  return (
+    value === undefined ||
+    (Number.isInteger(value) && (value as number) >= 0)
+  );
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }

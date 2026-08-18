@@ -4,7 +4,17 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { enqueueWorkflowNotification } from "./model.ts";
+import {
+  createAgentName,
+  deriveRunState,
+  enqueueWorkflowNotification,
+  isAgentKind,
+  isLegacyAgentName,
+  isRoleId,
+  isRoleOrder,
+  isWorkflowRun,
+} from "./model.ts";
+import type { WorkflowRunV2, WorkerRecord } from "./model.ts";
 import { createRun, loadRun, saveNewRun } from "./run-store.ts";
 import { isWorkerInspectionStale } from "./supervisor.ts";
 
@@ -111,3 +121,125 @@ test("worker inspections older than coordinator prompts are rejected", () => {
     false,
   );
 });
+
+test("version-two model validates generic roles and rejects malformed metadata", () => {
+  const run = createVersionTwoRun();
+
+  assert.equal(isRoleId("security-audit"), true);
+  assert.equal(isRoleId("Security Audit"), false);
+  assert.equal(isRoleId("a".repeat(33)), false);
+  assert.equal(isRoleOrder(["tests", "security-audit"]), true);
+  assert.equal(isRoleOrder(["tests", "tests"]), false);
+  assert.equal(isAgentKind("kilo"), true);
+  assert.equal(isAgentKind("gemini"), false);
+  assert.equal(isWorkflowRun(run), true);
+  assert.equal(isWorkflowRun(JSON.parse(JSON.stringify(run))), true);
+
+  const invalidOrigin = JSON.parse(JSON.stringify(run));
+  invalidOrigin.origin.workspaceId = "";
+  assert.equal(isWorkflowRun(invalidOrigin), false);
+
+  const invalidMap = JSON.parse(JSON.stringify(run));
+  invalidMap.workerOrder = ["tests", "tests"];
+  assert.equal(isWorkflowRun(invalidMap), false);
+
+  const swappedMap = JSON.parse(JSON.stringify(run));
+  swappedMap.workers.tests.kind = "code-review";
+  swappedMap.workers["code-review"].kind = "tests";
+  assert.equal(isWorkflowRun(swappedMap), false);
+
+  const invalidCheckpoint = JSON.parse(JSON.stringify(run));
+  invalidCheckpoint.workers.tests.sourceCheckpoint.stagedDiffSha256 = "bad";
+  assert.equal(isWorkflowRun(invalidCheckpoint), false);
+});
+
+test("stale workers block completion and arbitrary role IDs name agents safely", () => {
+  const run = createVersionTwoRun();
+  run.workers.tests.state = "stale";
+
+  assert.equal(deriveRunState(run), "blocked");
+  assert.equal(
+    createAgentName("run-12345678", "security-audit", 2),
+    "wf-12345678-security-audit-2",
+  );
+  assert.equal(
+    isLegacyAgentName(
+      "wf-12345678-review-2",
+      "run-12345678",
+      "code-review",
+      2,
+    ),
+    true,
+  );
+});
+
+function createVersionTwoRun(): WorkflowRunV2 {
+  const capturedAt = new Date().toISOString();
+  const sourceCheckpoint = {
+    headId: "abc123",
+    stagedDiffSha256: "a".repeat(64),
+    unstagedTrackedDiffSha256: "b".repeat(64),
+    capturedAt,
+  };
+  const workerOrder = ["tests", "code-review"];
+  const workers = Object.fromEntries(
+    workerOrder.map((roleId) => [roleId, createVersionTwoWorker(roleId, sourceCheckpoint)]),
+  );
+
+  return {
+    version: 2,
+    id: "run-12345678",
+    task: "Validate the version-two model",
+    createdAt: capturedAt,
+    updatedAt: capturedAt,
+    state: "reviews-complete",
+    workerOrder,
+    origin: {
+      workspaceId: "workspace-123",
+      paneId: "pane-123",
+      coordinatorKind: "kilo",
+      sessionId: "session-123",
+    },
+    workers,
+    notifications: [],
+    nextNotificationSequence: 1,
+  };
+}
+
+function createVersionTwoWorker(
+  roleId: string,
+  sourceCheckpoint: {
+    headId: string;
+    stagedDiffSha256: string;
+    unstagedTrackedDiffSha256: string;
+    capturedAt: string;
+  },
+): WorkerRecord {
+  return {
+    kind: roleId,
+    roleId,
+    attempt: 1,
+    definition: {
+      roleId,
+      label: roleId,
+      agentKind: "kilo",
+      skill: {
+        id: "test-verification",
+        hash: "c".repeat(64),
+        body: "Review the implementation and verify it.",
+      },
+      capabilityProfile: "review-read-only",
+      enforcement: {
+        profile: "review-read-only",
+        strength: "weak",
+        allowsWrites: false,
+      },
+    },
+    state: "done",
+    sourceCheckpoint,
+    result: {
+      output: "VERDICT: PASS",
+      capturedAt: sourceCheckpoint.capturedAt,
+    },
+  };
+}

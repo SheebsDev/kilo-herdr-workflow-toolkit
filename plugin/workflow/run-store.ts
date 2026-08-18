@@ -16,6 +16,7 @@ import * as path from "node:path";
 import {
   createAgentName,
   isRunState,
+  isLegacyAgentName,
   isWorkflowNotificationKind,
   isWorkerKind,
   isWorkerState,
@@ -545,7 +546,8 @@ function isExpectedAgentName(
   return (
     agentName === undefined ||
     agentName === "" ||
-    agentName === createAgentName(runId, kind, attempt)
+    agentName === createAgentName(runId, kind, attempt) ||
+    isLegacyAgentName(agentName, runId, kind, attempt)
   );
 }
 
