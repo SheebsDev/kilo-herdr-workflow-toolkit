@@ -28,6 +28,7 @@ import type {
   WorkflowRunV2,
 } from "./model.ts";
 import { loadBundledSkill } from "./skill-loader.ts";
+import { getWorkerLaunchConfiguration } from "./worker-profile.ts";
 
 const CURRENT_RUN_ID_PATTERN =
   /^run-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -292,17 +293,18 @@ function workerDefinition(roleId: string): WorkerDefinition {
     throw new Error(`Unknown built-in workflow role "${roleId}".`);
   }
 
+  const launchConfiguration = getWorkerLaunchConfiguration(
+    "kilo",
+    builtIn.roleId,
+  );
+
   return {
     roleId: builtIn.roleId,
     label: builtIn.label,
     agentKind: "kilo",
     skill: loadBundledSkill(builtIn.skillId),
-    capabilityProfile: "kilo-default",
-    enforcement: {
-      profile: "kilo-default",
-      strength: "moderate",
-      allowsWrites: true,
-    },
+    capabilityProfile: launchConfiguration.capabilityProfile,
+    enforcement: launchConfiguration.enforcement,
   };
 }
 

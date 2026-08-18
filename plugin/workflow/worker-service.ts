@@ -12,6 +12,7 @@ import type {
   WorkerState,
   WorkflowRun,
 } from "./model.ts";
+import { getWorkerLaunchConfiguration } from "./worker-profile.ts";
 
 const HERDR_TIMEOUT_MS = 120_000;
 const MAX_HERDR_OUTPUT_LENGTH = 2 * 1024 * 1024;
@@ -86,10 +87,19 @@ export async function spawnWorker(
   } = options;
   const spec = WORKER_SPECS[kind];
   const definition = run.workers[kind].definition;
+  if (!definition) {
+    throw new Error(`Workflow worker ${kind} has no persisted definition.`);
+  }
+
+  const launchConfiguration = getWorkerLaunchConfiguration(
+    definition.agentKind,
+    kind,
+  );
   const agentName = createAgentName(run.id, kind, attempt);
   const initialPrompt = buildWorkerPrompt(run, kind, additionalInstruction);
-  const windowsLaunch = process.platform === "win32";
-  let agentArguments = ["--agent", "code"];
+  const windowsLaunch =
+    launchConfiguration.promptTransport === "kilo-windows-prompt-file";
+  let agentArguments = [...launchConfiguration.launchArguments];
   let temporaryPromptDirectory: string | undefined;
   let tabId: string | undefined;
   let paneId: string | undefined;
@@ -147,7 +157,7 @@ export async function spawnWorker(
         "start",
         agentName,
         "--kind",
-        "kilo",
+        launchConfiguration.herdrKind,
         "--pane",
         paneId,
         "--",
