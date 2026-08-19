@@ -9,6 +9,21 @@ import {
 } from "./skill-loader.ts";
 import { buildWorkerPrompt } from "./worker-service.ts";
 import { createRun } from "./run-store.ts";
+import type { ProjectContext } from "./workflow-contracts.ts";
+
+function context(workspaceId: string, paneId: string, sessionId: string): ProjectContext {
+  return {
+    projectRoot: process.cwd(),
+    origin: {
+      workspaceId,
+      paneId,
+      coordinatorKind: "kilo",
+      sessionId,
+    },
+    signal: new AbortController().signal,
+    hostSession: { sessionId },
+  };
+}
 
 test("bundled skills load all built-in methodologies without frontmatter", () => {
   const expected = {
@@ -19,8 +34,7 @@ test("bundled skills load all built-in methodologies without frontmatter", () =>
 
   const run = createRun({
     task: "Load authoritative worker methodologies",
-    originSessionId: "session-skills",
-    workspaceId: "workspace-skills",
+    context: context("workspace-skills", "pane-skills", "session-skills"),
   });
 
   for (const [kind, skillId] of Object.entries(expected)) {
@@ -40,8 +54,7 @@ test("worker prompts inject each persisted skill body exactly once", () => {
   const run = createRun({
     task: "Build authoritative worker prompts",
     taskCardPath: ".kilo/plans/phase-1/TASK-003.md",
-    originSessionId: "session-prompts",
-    workspaceId: "workspace-prompts",
+    context: context("workspace-prompts", "pane-prompts", "session-prompts"),
   });
 
   for (const kind of ["tests", "code-review", "readability"] as const) {

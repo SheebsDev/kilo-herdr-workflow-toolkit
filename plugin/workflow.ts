@@ -9,6 +9,7 @@ import {
   WORKER_ORDER,
 } from "../core/model.ts";
 import type { WorkflowRun } from "../core/model.ts";
+import type { ProjectContext } from "../core/workflow-contracts.ts";
 import {
   createRun,
   normalizeTaskCardPath,
@@ -118,19 +119,34 @@ Do not call this while implementation files are still actively changing.
           const workerAgents = resolveWorkerAgents(args.workerAgents);
           await preflightWorkerSelections(workerAgents, context.abort);
           const workspaceId = requireHerdrWorkspace();
+          const paneId = process.env.HERDR_PANE_ID?.trim();
+          if (!paneId) {
+            throw new Error(
+              "The engineering workflow requires HERDR_PANE_ID from the current Herdr pane.",
+            );
+          }
+          const projectContext: ProjectContext = {
+            projectRoot,
+            origin: {
+              workspaceId,
+              paneId,
+              coordinatorKind: "kilo",
+              sessionId: context.sessionID,
+            },
+            signal: context.abort,
+            hostSession: { sessionId: context.sessionID },
+          };
           const sourceCheckpoint = await captureSourceCheckpoint(
             projectRoot,
             context.abort,
           );
           const run = createRun({
             task: args.task,
-            originSessionId: context.sessionID,
-            paneId: process.env.HERDR_PANE_ID,
+            context: projectContext,
             taskCardPath: await normalizeTaskCardPath(
               projectRoot,
               args.taskCardPath,
             ),
-            workspaceId,
             workerAgents,
           });
           for (const kind of WORKER_ORDER) {

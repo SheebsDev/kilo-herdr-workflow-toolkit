@@ -79,6 +79,9 @@ export const ENFORCEMENT_STRENGTHS = ["strong", "moderate", "weak"] as const;
 
 export type EnforcementStrength = (typeof ENFORCEMENT_STRENGTHS)[number];
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
 export interface SkillSnapshot {
   id: string;
   hash: string;
@@ -124,7 +127,7 @@ export interface WorkerResult {
   // `output` is the bounded raw worker output retained for audit evidence.
   output: string;
   capturedAt: string;
-  report?: unknown;
+  report?: JsonValue;
 }
 
 export interface WorkerAttemptEvidence {
@@ -300,7 +303,7 @@ export function isOriginMetadata(value: unknown): value is OriginMetadata {
     isNonEmptyString(value.workspaceId) &&
     isNonEmptyString(value.paneId) &&
     isAgentKind(value.coordinatorKind) &&
-    isOptionalString(value.sessionId)
+    isOptionalNonEmptyString(value.sessionId)
   );
 }
 
@@ -320,7 +323,8 @@ export function isWorkerResult(value: unknown): value is WorkerResult {
   return (
     isRecord(value) &&
     typeof value.output === "string" &&
-    isIsoDate(value.capturedAt)
+    isIsoDate(value.capturedAt) &&
+    (value.report === undefined || isJsonValue(value.report))
   );
 }
 
@@ -430,8 +434,8 @@ export function isWorkflowRun(value: unknown): value is WorkflowRunV2 {
     !isOriginMetadata(value.origin) ||
     !isWorkerMap(value.workers, value.workerOrder) ||
     !isOptionalString(value.taskCardPath) ||
-    !isOptionalString(value.originSessionId) ||
-    !isOptionalString(value.herdrWorkspaceId) ||
+    !isCompatibleOriginAlias(value.originSessionId, value.origin.sessionId) ||
+    !isCompatibleOriginAlias(value.herdrWorkspaceId, value.origin.workspaceId) ||
     !isOptionalPositiveInteger(value.nextNotificationSequence) ||
     !isOptionalNotificationArray(value.notifications)
   ) {
@@ -699,6 +703,41 @@ function isOptionalNotificationArray(value: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.every(isJsonValue);
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.values(value).every(isJsonValue)
+  );
+}
+
+function isCompatibleOriginAlias(
+  alias: unknown,
+  canonical: string | undefined,
+): boolean {
+  return alias === undefined || (typeof alias === "string" && alias === canonical);
 }
 
 function isNonEmptyString(value: unknown): value is string {

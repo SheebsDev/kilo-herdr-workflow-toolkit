@@ -12,6 +12,7 @@ const SHARED_MODULES = [
   "source-checkpoint.ts",
   "worker-profile.ts",
   "worker-service.ts",
+  "workflow-contracts.ts",
 ] as const;
 
 test("host-neutral workflow modules load without Kilo plugin imports", async () => {

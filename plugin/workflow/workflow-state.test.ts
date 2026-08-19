@@ -18,8 +18,23 @@ import {
   isWorkflowRun,
 } from "../../core/model.ts";
 import type { WorkflowRunV2, WorkerRecord } from "../../core/model.ts";
+import type { ProjectContext } from "../../core/workflow-contracts.ts";
 import { createRun, loadRun, saveNewRun, saveRun } from "../../core/run-store.ts";
 import { isWorkerInspectionStale } from "./supervisor.ts";
+
+function createContext(sessionId: string, workspaceId: string): ProjectContext {
+  return {
+    projectRoot: process.cwd(),
+    origin: {
+      workspaceId,
+      paneId: `pane-${sessionId}`,
+      coordinatorKind: "kilo",
+      sessionId,
+    },
+    signal: new AbortController().signal,
+    hostSession: { sessionId },
+  };
+}
 
 test("workflow notifications are durable and deduplicated by key", async () => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-state-"));
@@ -27,8 +42,7 @@ test("workflow notifications are durable and deduplicated by key", async () => {
   try {
     const run = createRun({
       task: "Verify asynchronous workflow state",
-      originSessionId: "session-123",
-      workspaceId: "workspace-123",
+      context: createContext("session-123", "workspace-123"),
     });
     const first = enqueueWorkflowNotification(run, {
       key: "tests:1:blocked:7",
@@ -70,8 +84,7 @@ test("workflow notifications are durable and deduplicated by key", async () => {
 test("version-two runs persist independent worker agent selections", () => {
   const run = createRun({
     task: "Persist mixed worker harness selections",
-    originSessionId: "session-mixed-agents",
-    workspaceId: "workspace-mixed-agents",
+    context: createContext("session-mixed-agents", "workspace-mixed-agents"),
     workerAgents: {
       tests: "codex",
       "code-review": "claude",
@@ -97,8 +110,7 @@ test("version-one runs are rejected without migration or deletion", async () => 
   try {
     const run = createRun({
       task: "Load a legacy workflow run",
-      originSessionId: "session-legacy",
-      workspaceId: "workspace-legacy",
+      context: createContext("session-legacy", "workspace-legacy"),
     });
     const legacyRun = { ...run, version: 1 };
     const runDirectory = path.join(projectRoot, ".workflow", "runs", run.id);
@@ -127,8 +139,7 @@ test("invalid version-two worker maps are rejected before persistence", async ()
   try {
     const run = createRun({
       task: "Reject an invalid worker map",
-      originSessionId: "session-invalid",
-      workspaceId: "workspace-invalid",
+      context: createContext("session-invalid", "workspace-invalid"),
     });
     delete run.workers.tests;
 
@@ -151,8 +162,7 @@ test("version-two runs can be updated atomically and loaded through latest", asy
   try {
     const run = createRun({
       task: "Persist an atomic update",
-      originSessionId: "session-atomic",
-      workspaceId: "workspace-atomic",
+      context: createContext("session-atomic", "workspace-atomic"),
     });
     await saveNewRun(projectRoot, run);
 
@@ -198,8 +208,7 @@ test("version-two storage accepts arbitrary valid role IDs", async () => {
 test("worker inspections older than coordinator prompts are rejected", () => {
   const run = createRun({
     task: "Reject stale worker observations",
-    originSessionId: "session-stale",
-    workspaceId: "workspace-stale",
+    context: createContext("session-stale", "workspace-stale"),
   });
   const worker = run.workers.tests;
 

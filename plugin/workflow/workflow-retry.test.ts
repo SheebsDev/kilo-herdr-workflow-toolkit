@@ -248,7 +248,9 @@ function toolContext() {
 
 async function createCoordinatorTools() {
   const inheritedRole = process.env.WORKFLOW_ROLE;
+  const inheritedPane = process.env.HERDR_PANE_ID;
   delete process.env.WORKFLOW_ROLE;
+  process.env.HERDR_PANE_ID = "pane-origin";
 
   try {
     return await workflowPlugin.server({
@@ -261,6 +263,11 @@ async function createCoordinatorTools() {
       delete process.env.WORKFLOW_ROLE;
     } else {
       process.env.WORKFLOW_ROLE = inheritedRole;
+    }
+    if (inheritedPane === undefined) {
+      delete process.env.HERDR_PANE_ID;
+    } else {
+      process.env.HERDR_PANE_ID = inheritedPane;
     }
   }
 }

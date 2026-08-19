@@ -29,6 +29,10 @@ import type {
   WorkflowRun,
   WorkflowRunV2,
 } from "./model.ts";
+import {
+  assertProjectContext,
+} from "./workflow-contracts.ts";
+import type { ProjectContext } from "./workflow-contracts.ts";
 import { loadBundledSkill } from "./skill-loader.ts";
 import { getWorkerLaunchConfiguration } from "./worker-profile.ts";
 
@@ -43,18 +47,15 @@ const STALE_RECOVERY_LOCK_MS = 30_000;
 export interface CreateRunOptions {
   task: string;
   taskCardPath?: string;
-  originSessionId: string;
-  workspaceId: string;
-  paneId?: string;
+  context: ProjectContext;
   workerAgents?: Partial<Record<WorkerKind, AgentKind>>;
 }
 
 export function createRun(options: CreateRunOptions): WorkflowRunV2 {
+  assertProjectContext(options.context);
+
   const now = new Date().toISOString();
-  const paneId =
-    options.paneId?.trim() ||
-    process.env.HERDR_PANE_ID?.trim() ||
-    options.originSessionId.trim();
+  const origin = { ...options.context.origin };
   const workerAgents = options.workerAgents ?? {};
   const workers = Object.fromEntries(
     WORKER_ORDER.map((roleId) => [
@@ -68,18 +69,13 @@ export function createRun(options: CreateRunOptions): WorkflowRunV2 {
     id: `run-${randomUUID()}`,
     task: options.task.trim(),
     taskCardPath: options.taskCardPath,
-    originSessionId: options.originSessionId,
-    herdrWorkspaceId: options.workspaceId,
+    originSessionId: origin.sessionId,
+    herdrWorkspaceId: origin.workspaceId,
     createdAt: now,
     updatedAt: now,
     state: "launching",
     workerOrder: [...WORKER_ORDER],
-    origin: {
-      workspaceId: options.workspaceId,
-      paneId,
-      coordinatorKind: "kilo",
-      sessionId: options.originSessionId,
-    },
+    origin,
     workers,
     nextNotificationSequence: 1,
     notifications: [],
