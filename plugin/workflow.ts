@@ -27,7 +27,12 @@ const workflowPlugin: Plugin = async ({ directory, worktree }) => {
   return {
     event: async ({ event }) => {
       if (event.type === "session.idle") {
-        await service.resumeForSession(projectRoot, event.properties.sessionID);
+        await service.recover({
+          context: createProjectContext(projectRoot, paneHint, {
+            sessionID: event.properties.sessionID,
+            abort: new AbortController().signal,
+          }),
+        });
       }
     },
 

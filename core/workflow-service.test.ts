@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import * as path from "node:path";
 import test, { mock } from "node:test";
+import { tmpdir } from "node:os";
 
 import {
   createRun as createFixtureRun,
@@ -12,11 +14,17 @@ import type {
 import type { WorkflowServiceWorkerOperations } from "./workflow-service.ts";
 
 const runs = new Map<string, ReturnType<typeof createFixtureRun>>();
+const listedRuns: ReturnType<typeof createFixtureRun>[] = [];
+const listedRunsByProjectRoot = new Map<
+  string,
+  ReturnType<typeof createFixtureRun>[]
+>();
 const preflightSelections: unknown[] = [];
 const supervisedRuns: string[] = [];
 const cancelledWorkers: string[] = [];
 const closedWorkers: string[] = [];
 const promptedWorkers: string[] = [];
+let supervisorCreations = 0;
 let checkpointCount = 0;
 let saveFailure: Error | undefined;
 let supervisorStatusCalls = 0;
@@ -42,6 +50,10 @@ mock.module("./run-store.ts", {
       return run;
     },
     normalizeTaskCardPath: async () => undefined,
+    listRuns: async (projectRoot: string) =>
+      listedRunsByProjectRoot.has(projectRoot)
+        ? listedRunsByProjectRoot.get(projectRoot)!
+        : listedRuns,
     saveNewRun: async (_projectRoot: string, run: ReturnType<typeof createFixtureRun>) => {
       runs.set(run.id, run);
       if (abortOnSaveNewRun) {
@@ -154,20 +166,28 @@ mock.module("./worker-service.ts", {
 mock.module("./supervisor.ts", {
   exports: {
     WorkflowSupervisor: class {
+      private readonly supervised = new Set<string>();
+
+      constructor() {
+        supervisorCreations += 1;
+      }
+
       async reconcileOnce(): Promise<Map<"tests" | "code-review" | "readability", never>> {
         supervisorStatusCalls += 1;
         return new Map();
       }
 
       supervise(runId: string): void {
+        if (this.supervised.has(runId)) {
+          return;
+        }
+        this.supervised.add(runId);
         supervisedRuns.push(runId);
       }
 
       cancelWorker(runId: string, kind: string): void {
         cancelledWorkers.push(`${runId}:${kind}`);
       }
-
-      async resumeForSession(): Promise<void> {}
 
       async dispose(): Promise<void> {}
     },
@@ -310,6 +330,134 @@ test("status supports latest lookup and preserves pending delivery failures", as
   assert.equal(result.runId, run.id);
   assert.equal(result.notifications[0].deliveryError, "origin unavailable");
   assert.doesNotThrow(() => JSON.stringify(result));
+});
+
+test("recovery resumes only same-origin active runs and pending terminal outboxes", async () => {
+  reset();
+  const active = createFixtureRun();
+  const pendingTerminal = createFixtureRun();
+  for (const worker of Object.values(pendingTerminal.workers)) {
+    worker.state = "stopped";
+  }
+  pendingTerminal.state = "stopped";
+  pendingTerminal.notifications = [
+    {
+      sequence: 1,
+      key: "tests:1:error:1",
+      kind: "worker-error",
+      message: "Tests failed.",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+
+  const completed = createFixtureRun();
+  for (const worker of Object.values(completed.workers)) {
+    worker.state = "stopped";
+  }
+  completed.state = "stopped";
+
+  const differentPane = createFixtureRun();
+  differentPane.origin = { ...active.origin, paneId: "other-pane" };
+  const differentWorkspace = createFixtureRun();
+  differentWorkspace.origin = { ...active.origin, workspaceId: "other-workspace" };
+  const differentKind = createFixtureRun();
+  differentKind.origin = { ...active.origin, coordinatorKind: "claude" };
+  const differentSession = createFixtureRun();
+  differentSession.origin = { ...active.origin, sessionId: "other-session" };
+
+  listedRuns.push(
+    active,
+    pendingTerminal,
+    completed,
+    differentPane,
+    differentWorkspace,
+    differentKind,
+    differentSession,
+  );
+
+  const result = await createService().recover({ context: createContext() });
+
+  assert.deepEqual(result.runIds, [active.id, pendingTerminal.id]);
+  assert.deepEqual(supervisedRuns, [active.id, pendingTerminal.id]);
+});
+
+test("recovery allows a pane match when optional Kilo session metadata is absent", async () => {
+  reset();
+  const run = createFixtureRun();
+  run.origin = {
+    workspaceId: "workspace-test",
+    paneId: "pane-origin",
+    coordinatorKind: "kilo",
+  };
+  run.originSessionId = undefined;
+  listedRuns.push(run);
+
+  const result = await createService().recover({
+    context: createContext("pane-origin", "new-session"),
+  });
+
+  assert.deepEqual(result.runIds, [run.id]);
+});
+
+test("recovery shares one supervisor across symlink-equivalent project roots", async () => {
+  reset();
+  const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-recovery-"));
+  const linkedRoot = `${projectRoot}-link`;
+
+  try {
+    await symlink(
+      projectRoot,
+      linkedRoot,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const run = createFixtureRun();
+    listedRuns.push(run);
+    const service = createService();
+
+    await service.recover({ context: createContext("pane-origin", "session-test", undefined, projectRoot) });
+    await service.recover({ context: createContext("pane-origin", "session-test", undefined, linkedRoot) });
+
+    assert.equal(supervisorCreations, 1);
+    assert.deepEqual(supervisedRuns, [run.id]);
+  } finally {
+    await rm(linkedRoot, { force: true, recursive: true });
+    await rm(projectRoot, { force: true, recursive: true });
+  }
+});
+
+test("recovery does not inspect runs stored under another project root", async () => {
+  reset();
+  const storedRoot = await mkdtemp(path.join(tmpdir(), "workflow-recovery-stored-"));
+  const currentRoot = await mkdtemp(path.join(tmpdir(), "workflow-recovery-current-"));
+
+  try {
+    const run = createFixtureRun();
+    listedRunsByProjectRoot.set(storedRoot, [run]);
+
+    const result = await createService().recover({
+      context: createContext("pane-origin", "session-test", undefined, currentRoot),
+    });
+
+    assert.deepEqual(result.runIds, []);
+    assert.deepEqual(supervisedRuns, []);
+  } finally {
+    await rm(storedRoot, { force: true, recursive: true });
+    await rm(currentRoot, { force: true, recursive: true });
+  }
+});
+
+test("disposal stops the current supervisor and permits same-origin restart recovery", async () => {
+  reset();
+  const run = createFixtureRun();
+  listedRuns.push(run);
+  const service = createService();
+
+  await service.recover({ context: createContext() });
+  await service.dispose();
+  await service.recover({ context: createContext() });
+
+  assert.equal(supervisorCreations, 2);
+  assert.deepEqual(supervisedRuns, [run.id, run.id]);
 });
 
 test("persistence and cleanup failures do not report send, stop, or retry success", async () => {
@@ -679,9 +827,10 @@ function createContext(
   paneId = "pane-origin",
   sessionId = "session-test",
   signal = new AbortController().signal,
+  projectRoot = path.resolve(process.cwd()),
 ): ProjectContext {
   return {
-    projectRoot: path.resolve(process.cwd()),
+    projectRoot,
     origin: {
       workspaceId: "workspace-test",
       paneId,
@@ -695,11 +844,14 @@ function createContext(
 
 function reset(): void {
   runs.clear();
+  listedRuns.length = 0;
+  listedRunsByProjectRoot.clear();
   preflightSelections.length = 0;
   supervisedRuns.length = 0;
   cancelledWorkers.length = 0;
   closedWorkers.length = 0;
   promptedWorkers.length = 0;
+  supervisorCreations = 0;
   checkpointCount = 0;
   saveFailure = undefined;
   supervisorStatusCalls = 0;

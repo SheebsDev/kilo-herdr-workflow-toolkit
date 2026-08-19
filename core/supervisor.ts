@@ -14,7 +14,6 @@ import {
   sourceCheckpointsEqual,
 } from "./source-checkpoint.ts";
 import {
-  listRuns,
   loadRun,
   saveRun,
   withLockedRun,
@@ -155,23 +154,6 @@ export class WorkflowSupervisor {
 
     await this.queueReviewsComplete(options.runId);
     return inspections;
-  }
-
-  async resumeForSession(sessionId: string): Promise<void> {
-    if (this.disposed) {
-      return;
-    }
-
-    const runs = await listRuns(this.projectRoot);
-
-    for (const run of runs) {
-      if (run.originSessionId !== sessionId) {
-        continue;
-      }
-
-      this.supervise(run.id);
-      void this.deliverPending(run.id).catch(() => undefined);
-    }
   }
 
   cancelWorker(runId: string, kind: WorkerKind): void {

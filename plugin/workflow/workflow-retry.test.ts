@@ -25,6 +25,7 @@ mock.module("../../core/run-store.ts", {
   exports: {
     createRun: () => createTestRun(),
     normalizeTaskCardPath: async () => undefined,
+    listRuns: async () => [],
     saveNewRun: async () => undefined,
     saveRun: async () => {
       saveCount += 1;
@@ -126,8 +127,6 @@ mock.module("../../core/supervisor.ts", {
       }
 
       cancelWorker(): void {}
-
-      async resumeForSession(): Promise<void> {}
 
       async dispose(): Promise<void> {}
     },

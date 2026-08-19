@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+
 import {
   archiveWorkerAttempt,
   createReplacementWorker,
@@ -6,6 +8,7 @@ import {
   WORKER_ORDER,
 } from "./model.ts";
 import type {
+  OriginMetadata,
   WorkerKind,
   WorkerRecord,
   WorkflowRun,
@@ -16,6 +19,8 @@ import {
 } from "./workflow-contracts.ts";
 import type {
   ProjectContext,
+  WorkflowRecoveryInput,
+  WorkflowRecoveryResult,
   WorkflowRetryInput,
   WorkflowRetryResult,
   WorkflowSendInput,
@@ -29,6 +34,7 @@ import type {
 } from "./workflow-contracts.ts";
 import {
   createRun,
+  listRuns,
   normalizeTaskCardPath,
   saveNewRun,
   saveRun,
@@ -462,8 +468,28 @@ export class WorkflowService {
     return result;
   }
 
-  async resumeForSession(projectRoot: string, sessionId: string): Promise<void> {
-    await this.supervisorFor(projectRoot).resumeForSession(sessionId);
+  async recover(input: WorkflowRecoveryInput): Promise<WorkflowRecoveryResult> {
+    assertContext(input.context);
+    throwIfAborted(input.context.signal);
+
+    const supervisor = this.supervisorFor(input.context.projectRoot);
+    const recoveredRunIds: string[] = [];
+
+    for (const run of await listRuns(input.context.projectRoot)) {
+      throwIfAborted(input.context.signal);
+
+      if (
+        !isEligibleRecoveryRun(run) ||
+        !matchesRecoveryOrigin(input.context, run.origin)
+      ) {
+        continue;
+      }
+
+      supervisor.supervise(run.id);
+      recoveredRunIds.push(run.id);
+    }
+
+    return { runIds: recoveredRunIds };
   }
 
   async dispose(): Promise<void> {
@@ -472,17 +498,18 @@ export class WorkflowService {
   }
 
   private supervisorFor(projectRoot: string): WorkflowSupervisor {
-    const existing = this.supervisors.get(projectRoot);
+    const canonicalProjectRoot = canonicalProjectRootPath(projectRoot);
+    const existing = this.supervisors.get(canonicalProjectRoot);
     if (existing) {
       return existing;
     }
 
     const supervisor = this.supervisorFactory({
       notifier: this.notifier,
-      projectRoot,
+      projectRoot: canonicalProjectRoot,
       workerOperations: this.workerOperations,
     });
-    this.supervisors.set(projectRoot, supervisor);
+    this.supervisors.set(canonicalProjectRoot, supervisor);
     return supervisor;
   }
 
@@ -684,4 +711,55 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
     : new Error("Workflow operation was aborted.");
+}
+
+function isEligibleRecoveryRun(run: WorkflowRun): boolean {
+  const hasPendingNotifications = (run.notifications ?? []).some(
+    (notification) => notification.deliveredAt === undefined,
+  );
+  const workerOrder = run.workerOrder ?? WORKER_ORDER;
+  const hasUnfinishedWorker = workerOrder.some((kind) => {
+    const worker = run.workers[kind];
+    return worker && !worker.result && worker.state !== "stopped";
+  });
+
+  return hasUnfinishedWorker || hasPendingNotifications;
+}
+
+function matchesRecoveryOrigin(
+  context: ProjectContext,
+  runOrigin: OriginMetadata,
+): boolean {
+  if (
+    context.origin.workspaceId !== runOrigin.workspaceId ||
+    context.origin.paneId !== runOrigin.paneId ||
+    context.origin.coordinatorKind !== runOrigin.coordinatorKind
+  ) {
+    return false;
+  }
+
+  // Kilo session identity is optional durable metadata. When both hosts have
+  // it, require an exact match; the Herdr pane remains the primary identity.
+  return !(
+    context.origin.coordinatorKind === "kilo" &&
+    context.origin.sessionId !== undefined &&
+    runOrigin.sessionId !== undefined &&
+    context.origin.sessionId !== runOrigin.sessionId
+  );
+}
+
+function canonicalProjectRootPath(projectRoot: string): string {
+  try {
+    return realpathSync.native(projectRoot);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error as Error & { code?: unknown }).code === "ENOENT"
+    ) {
+      return projectRoot;
+    }
+
+    throw error;
+  }
 }

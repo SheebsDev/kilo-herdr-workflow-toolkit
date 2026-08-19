@@ -29,6 +29,7 @@ mock.module("../../core/run-store.ts", {
       return run;
     },
     normalizeTaskCardPath: async () => undefined,
+    listRuns: async () => [],
     saveNewRun: async (_projectRoot: string, run: ReturnType<typeof createTestRun>) => {
       persistedRuns.push(run);
     },
@@ -132,7 +133,6 @@ mock.module("../../core/supervisor.ts", {
     WorkflowSupervisor: class {
       supervise(): void {}
       cancelWorker(): void {}
-      async resumeForSession(): Promise<void> {}
       async dispose(): Promise<void> {}
     },
   },
