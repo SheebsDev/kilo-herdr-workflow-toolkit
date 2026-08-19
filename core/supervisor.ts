@@ -100,6 +100,63 @@ export class WorkflowSupervisor {
     void preparation.catch(() => undefined);
   }
 
+  /**
+   * Reconcile one durable snapshot without creating watches or delivering
+   * notifications. Adapters use this for inspection from any permitted pane.
+   */
+  async reconcileOnce(options: {
+    runId: string;
+    worker?: WorkerKind;
+    includeOutput: boolean;
+    signal?: AbortSignal;
+  }): Promise<Map<WorkerKind, SupervisorWorkerInspection>> {
+    const run = await loadRun(this.projectRoot, options.runId);
+    const kinds = options.worker ? [options.worker] : WORKER_ORDER;
+    const inspections = new Map<WorkerKind, SupervisorWorkerInspection>();
+
+    for (const kind of kinds) {
+      const worker = run.workers[kind];
+
+      if (worker.result || worker.state === "stopped") {
+        inspections.set(kind, {
+          state: worker.state,
+          output: worker.result?.output,
+          stateChangeSeq: worker.stateChangeSeq,
+        });
+        continue;
+      }
+
+      if (worker.state === "error" || !worker.agentName) {
+        await this.queueWorkerError(options.runId, worker);
+        inspections.set(kind, {
+          state: worker.state,
+          error: worker.lastError,
+          stateChangeSeq: worker.stateChangeSeq,
+        });
+        continue;
+      }
+
+      const inspection = await this.workerOperations.inspectWorker({
+        worker,
+        projectRoot: this.projectRoot,
+        includeOutput: options.includeOutput,
+        signal: options.signal,
+      });
+      inspections.set(kind, inspection);
+      await this.applyInspection(
+        options.runId,
+        kind,
+        worker.attempt,
+        inspection,
+        options.signal,
+        false,
+      );
+    }
+
+    await this.queueReviewsComplete(options.runId);
+    return inspections;
+  }
+
   async resumeForSession(sessionId: string): Promise<void> {
     if (this.disposed) {
       return;
@@ -281,6 +338,7 @@ export class WorkflowSupervisor {
     attempt: number,
     inspection: SupervisorWorkerInspection,
     signal: AbortSignal,
+    deliver = true,
   ): Promise<ReconciledState> {
     const state = await withLockedRun(
       this.projectRoot,
@@ -434,7 +492,9 @@ export class WorkflowSupervisor {
 
     await this.cleanupCompletedWorker(runId, kind, attempt, signal);
     await this.queueReviewsComplete(runId);
-    await this.deliverPending(runId);
+    if (deliver) {
+      await this.deliverPending(runId);
+    }
     return "complete";
   }
 

@@ -213,6 +213,35 @@ test("outbox delivery persists before notification and marks exact sequences onc
   }
 });
 
+test("one-shot reconciliation updates durable state without watches or wake delivery", async () => {
+  resetTestState();
+  const run = createWorkerRun();
+  runs.set(run.id, run);
+  const batches: CoordinatorNotificationBatch[] = [];
+  const supervisor = new WorkflowSupervisor({
+    notifier: createNotifier(async (batch) => {
+      batches.push(batch);
+    }),
+    projectRoot: "/test-project",
+  });
+
+  try {
+    const inspections = await supervisor.reconcileOnce({
+      runId: run.id,
+      includeOutput: true,
+    });
+
+    assert.equal(inspections.get("tests")?.output, inspectionOutput);
+    assert.equal(run.workers.tests.state, "done");
+    assert.equal(run.workers.tests.tabId, undefined);
+    assert.equal(run.state, "reviews-complete");
+    assert.deepEqual(batches, []);
+  } finally {
+    await supervisor.dispose();
+    runs.delete(run.id);
+  }
+});
+
 test("failed delivery remains pending with failure data and a new supervisor can retry", async () => {
   resetTestState();
   const run = createRun();

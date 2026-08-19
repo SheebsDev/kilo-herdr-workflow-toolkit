@@ -514,13 +514,16 @@ export function createReplacementWorker(
     roleId: existing.roleId ?? existing.kind,
     attempt,
     definition: existing.definition,
-    attemptHistory: [
-      ...(existing.attemptHistory ?? []),
-      createAttemptEvidence(existing),
-    ],
+    attemptHistory: archiveWorkerAttempt(existing),
     sourceCheckpoint,
     state: "launching",
   };
+}
+
+export function archiveWorkerAttempt(
+  worker: WorkerRecord,
+): WorkerAttemptEvidence[] {
+  return [...(worker.attemptHistory ?? []), createAttemptEvidence(worker)];
 }
 
 export function enqueueWorkflowNotification(

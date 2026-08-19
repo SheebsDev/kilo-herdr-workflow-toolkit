@@ -15,6 +15,7 @@ const SHARED_MODULES = [
   "source-checkpoint.ts",
   "worker-profile.ts",
   "worker-service.ts",
+  "workflow-service.ts",
   "workflow-contracts.ts",
 ] as const;
 

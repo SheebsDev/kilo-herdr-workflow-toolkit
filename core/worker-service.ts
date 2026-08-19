@@ -37,7 +37,7 @@ const WORKER_SPECS: Record<WorkerKind, WorkerSpec> = {
   },
 };
 
-interface SpawnWorkerOptions {
+export interface SpawnWorkerOptions {
   run: WorkflowRun;
   projectRoot: string;
   kind: WorkerKind;
@@ -358,6 +358,7 @@ export async function promptWorker(
   message: string,
   projectRoot: string,
   signal?: AbortSignal,
+  expected?: WorkerResourceExpectation,
 ): Promise<number> {
   const agent = await getAgentIdentity(agentName, projectRoot, signal);
 
@@ -365,9 +366,32 @@ export async function promptWorker(
     throw new Error(`Herdr agent ${agentName} was not found.`);
   }
 
+  if (expected) {
+    const { run, worker } = expected;
+    if (
+      worker.agentName !== agentName ||
+      worker.attempt < 1 ||
+      !worker.tabId ||
+      !worker.paneId ||
+      agent.tabId !== worker.tabId ||
+      agent.paneId !== worker.paneId ||
+      agent.workspaceId !== run.herdrWorkspaceId ||
+      !samePath(agent.cwd, projectRoot)
+    ) {
+      throw new Error(
+        `Refusing to prompt ${agentName}: its current Herdr identity does not match workflow ${run.id} attempt ${worker.attempt}.`,
+      );
+    }
+  }
+
   const requiredTransitions = agent.state === "working" ? 2 : 1;
   await submitPrompt(agentName, message, projectRoot, signal);
   return agent.stateChangeSeq + requiredTransitions;
+}
+
+export interface WorkerResourceExpectation {
+  run: WorkflowRun;
+  worker: WorkerRecord;
 }
 
 export interface WorkerErrorRecordOptions {
@@ -480,6 +504,12 @@ export async function closeWorker(
     return;
   }
 
+  if (worker.attempt < 1) {
+    throw new Error(
+      `Refusing to close tab ${worker.tabId}: workflow attempt ${worker.attempt} is not an active attempt.`,
+    );
+  }
+
   const tab = await getTabIdentity(worker.tabId, projectRoot, signal);
   if (!tab) {
     return;
@@ -519,6 +549,10 @@ export async function closeWorker(
         `Refusing to close tab ${worker.tabId}: its worker identity no longer matches workflow ${run.id}.`,
       );
     }
+  } else {
+    throw new Error(
+      `Refusing to close tab ${worker.tabId}: the workflow worker identity is incomplete.`,
+    );
   }
 
   try {
