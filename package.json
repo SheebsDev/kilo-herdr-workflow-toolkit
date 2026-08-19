@@ -5,13 +5,16 @@
   "description": "Parallel test, code, and readability review workflow for Kilo Code sessions running in Herdr",
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --experimental-test-module-mocks --test core/*.test.ts plugin/workflow/*.test.ts",
-    "check": "npm test"
+    "test": "node --experimental-strip-types --experimental-test-module-mocks --test core/*.test.ts plugin/workflow/*.test.ts mcp/*.test.ts",
+    "check": "npm test",
+    "mcp": "node --experimental-strip-types mcp/server.ts"
   },
   "engines": {
     "node": ">=22.22.2"
   },
   "dependencies": {
-    "@kilocode/plugin": "7.4.20"
+    "@kilocode/plugin": "7.4.20",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.1.8"
   }
 }

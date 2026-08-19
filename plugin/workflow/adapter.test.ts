@@ -162,12 +162,25 @@ test("Kilo adapter preserves its public tools and maps every operation", async (
     workers: [],
     notifications: [],
   });
-  assert.equal(sendResult, "Instruction sent to tests (agent-tests).");
-  assert.equal(stopResult, "tests stopped.");
+  assert.deepEqual(JSON.parse(String(sendResult)), {
+    runId: "run-send",
+    worker: "tests",
+    state: "reviewing",
+    message: "Instruction sent to tests (agent-tests).",
+  });
+  assert.deepEqual(JSON.parse(String(stopResult)), {
+    runId: "run-stop",
+    worker: "tests",
+    state: "blocked",
+    message: "tests stopped.",
+  });
   assert.deepEqual(JSON.parse(String(retryResult)), {
     runId: "run-retry",
-    worker: { kind: "tests", state: "working" },
+    worker: "tests",
     state: "reviewing",
+    message: "tests retry started.",
+    workerRecord: { kind: "tests", state: "working" },
+    workerResult: { kind: "tests", state: "working" },
   });
 
   const inputs = new Map(
