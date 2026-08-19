@@ -65,7 +65,7 @@ if [ "$scope" = project ]; then
 
   is_managed_payload_path() {
     case "$1" in
-      package.json|package-lock.json|command/*|plugin/*|skills/*) return 0 ;;
+      package.json|package-lock.json|command/*|core/*|launcher/*|plugin/*|skills/*) return 0 ;;
       *) return 1 ;;
     esac
   }

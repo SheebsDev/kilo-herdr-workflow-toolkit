@@ -5,7 +5,7 @@
   "description": "Parallel test, code, and readability review workflow for Kilo Code sessions running in Herdr",
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --experimental-test-module-mocks --test plugin/workflow/*.test.ts",
+    "test": "node --experimental-strip-types --experimental-test-module-mocks --test core/*.test.ts plugin/workflow/*.test.ts",
     "check": "npm test"
   },
   "engines": {

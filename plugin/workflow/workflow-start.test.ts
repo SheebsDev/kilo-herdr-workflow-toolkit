@@ -14,7 +14,7 @@ let preflightError: Error | undefined;
 let checkpointError: Error | undefined;
 let launchFailure: string | undefined;
 
-mock.module("./run-store.ts", {
+mock.module("../../core/run-store.ts", {
   exports: {
     createRun: (options: {
       workerAgents: Record<string, string>;
@@ -48,7 +48,7 @@ mock.module("./run-store.ts", {
   },
 });
 
-mock.module("./worker-profile.ts", {
+mock.module("../../core/worker-profile.ts", {
   exports: {
     resolveWorkerAgents: (value: unknown) => ({
       tests: (value as { tests?: string } | undefined)?.tests ?? "kilo",
@@ -67,7 +67,7 @@ mock.module("./worker-profile.ts", {
   },
 });
 
-mock.module("./source-checkpoint.ts", {
+mock.module("../../core/source-checkpoint.ts", {
   exports: {
     captureSourceCheckpoint: async () => {
       if (checkpointError) {
@@ -78,7 +78,7 @@ mock.module("./source-checkpoint.ts", {
   },
 });
 
-mock.module("./worker-service.ts", {
+mock.module("../../core/worker-service.ts", {
   exports: {
     closeWorker: async (
       _run: ReturnType<typeof createTestRun>,

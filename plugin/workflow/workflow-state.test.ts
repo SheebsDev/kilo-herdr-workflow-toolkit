@@ -16,9 +16,9 @@ import {
   isRoleOrder,
   summarizeWorkers,
   isWorkflowRun,
-} from "./model.ts";
-import type { WorkflowRunV2, WorkerRecord } from "./model.ts";
-import { createRun, loadRun, saveNewRun, saveRun } from "./run-store.ts";
+} from "../../core/model.ts";
+import type { WorkflowRunV2, WorkerRecord } from "../../core/model.ts";
+import { createRun, loadRun, saveNewRun, saveRun } from "../../core/run-store.ts";
 import { isWorkerInspectionStale } from "./supervisor.ts";
 
 test("workflow notifications are durable and deduplicated by key", async () => {

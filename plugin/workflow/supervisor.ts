@@ -4,29 +4,29 @@ import {
   enqueueWorkflowNotification,
   refreshRunState,
   WORKER_ORDER,
-} from "./model.ts";
+} from "../../core/model.ts";
 import type {
   SourceCheckpoint,
   WorkerKind,
   WorkerRecord,
   WorkflowRun,
-} from "./model.ts";
+} from "../../core/model.ts";
 import {
   captureSourceCheckpoint,
   sourceCheckpointsEqual,
-} from "./source-checkpoint.ts";
+} from "../../core/source-checkpoint.ts";
 import {
   listRuns,
   loadRun,
   saveRun,
   withLockedRun,
-} from "./run-store.ts";
+} from "../../core/run-store.ts";
 import {
   closeWorker,
   errorMessage,
   inspectWorker,
   waitForWorkerState,
-} from "./worker-service.ts";
+} from "../../core/worker-service.ts";
 
 const MAX_CAPTURED_OUTPUT_LENGTH = 256 * 1024;
 const BLOCKED_CONFIRMATION_MS = 30_000;

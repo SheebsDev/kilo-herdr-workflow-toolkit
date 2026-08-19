@@ -21,12 +21,7 @@ import type { WorkerLaunchConfiguration } from "./worker-profile.ts";
 
 const HERDR_TIMEOUT_MS = 120_000;
 const MAX_HERDR_OUTPUT_LENGTH = 2 * 1024 * 1024;
-const WORKFLOW_LAUNCHER_DIRECTORY = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "..",
-  "launcher",
-);
+const WORKFLOW_LAUNCHER_DIRECTORY = resolveWorkflowLauncherDirectory();
 
 interface WorkerSpec {
   tabLabel: string;
@@ -60,6 +55,12 @@ export interface WorkerInspection {
   error?: string;
   promptStarted?: boolean;
   stateChangeSeq?: number;
+}
+
+export function resolveWorkflowLauncherDirectory(
+  moduleUrl: string | URL = import.meta.url,
+): string {
+  return path.resolve(path.dirname(fileURLToPath(moduleUrl)), "..", "launcher");
 }
 
 type HerdrWaitState = "idle" | "working" | "blocked" | "done" | "unknown";

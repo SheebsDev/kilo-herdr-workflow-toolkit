@@ -10,7 +10,6 @@ export const MAX_BUNDLED_SKILL_BYTES = 128 * 1024;
 const TOOLKIT_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
-  "..",
 );
 const BUNDLED_SKILLS_ROOT = path.join(TOOLKIT_ROOT, "skills");
 

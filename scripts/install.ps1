@@ -30,7 +30,7 @@ function Get-PayloadFiles {
     param([string] $Root)
 
     $files = @(
-        foreach ($directory in 'command', 'plugin', 'skills') {
+        foreach ($directory in 'command', 'core', 'launcher', 'plugin', 'skills') {
             $directoryPath = Join-Path $Root $directory
             if (Test-Path -LiteralPath $directoryPath -PathType Container) {
                 Get-ChildItem -LiteralPath $directoryPath -File -Recurse | ForEach-Object {
@@ -85,7 +85,7 @@ function Get-FileDigest {
 function Test-ManagedPayloadPath {
     param([string] $Path)
 
-    return $Path -eq 'package.json' -or $Path -eq 'package-lock.json' -or $Path -match '^(command|plugin|skills)/'
+    return $Path -eq 'package.json' -or $Path -eq 'package-lock.json' -or $Path -match '^(command|core|launcher|plugin|skills)/'
 }
 
 function Test-SameFile {

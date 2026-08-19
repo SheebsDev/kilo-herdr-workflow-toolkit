@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
-import { refreshRunState } from "./model.ts";
+import { refreshRunState } from "../../core/model.ts";
 import {
   createRun as createTestRun,
   createTestCheckpoint,
@@ -21,7 +21,7 @@ let launchError: Error | undefined;
 let saveCount = 0;
 const supervisedRuns: string[] = [];
 
-mock.module("./run-store.ts", {
+mock.module("../../core/run-store.ts", {
   exports: {
     createRun: () => createTestRun(),
     normalizeTaskCardPath: async () => undefined,
@@ -50,13 +50,13 @@ mock.module("./run-store.ts", {
   },
 });
 
-mock.module("./source-checkpoint.ts", {
+mock.module("../../core/source-checkpoint.ts", {
   exports: {
     captureSourceCheckpoint: async () => currentCheckpoint,
   },
 });
 
-mock.module("./worker-service.ts", {
+mock.module("../../core/worker-service.ts", {
   exports: {
     closeWorker: async (
       _run: ReturnType<typeof createTestRun>,

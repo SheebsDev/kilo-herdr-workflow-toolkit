@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
-import { createAgentName } from "./model.ts";
+import { createAgentName } from "../../core/model.ts";
 import { createRun, createTestCheckpoint } from "./supervisor-test-helpers.ts";
 
 const runs = new Map<string, ReturnType<typeof createRun>>();
@@ -10,7 +10,7 @@ let inspectionOutput = "VERDICT: PASS";
 let captureCount = 0;
 const closedWorkers: string[] = [];
 
-mock.module("./run-store.ts", {
+mock.module("../../core/run-store.ts", {
   exports: {
     listRuns: async () => [...runs.values()],
     loadRun: async (_projectRoot: string, runId: string) => {
@@ -36,7 +36,7 @@ mock.module("./run-store.ts", {
   },
 });
 
-mock.module("./source-checkpoint.ts", {
+mock.module("../../core/source-checkpoint.ts", {
   exports: {
     captureSourceCheckpoint: async () => {
       captureCount += 1;
@@ -52,7 +52,7 @@ mock.module("./source-checkpoint.ts", {
   },
 });
 
-mock.module("./worker-service.ts", {
+mock.module("../../core/worker-service.ts", {
   exports: {
     closeWorker: async (
       _run: ReturnType<typeof createRun>,

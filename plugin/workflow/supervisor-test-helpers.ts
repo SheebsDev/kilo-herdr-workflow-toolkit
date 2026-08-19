@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { SourceCheckpoint, WorkflowRunV2 } from "./model.ts";
+import type { SourceCheckpoint, WorkflowRunV2 } from "../../core/model.ts";
 
 export function createRun(): WorkflowRunV2 {
   const capturedAt = new Date().toISOString();

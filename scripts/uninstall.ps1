@@ -28,7 +28,7 @@ if ($Scope -eq 'Project') {
         if ($parts.Count -ne 2 -or -not $parts[0] -or -not $parts[1]) {
             continue
         }
-        if ($parts[1] -ne 'package.json' -and $parts[1] -ne 'package-lock.json' -and $parts[1] -notmatch '^(command|plugin|skills)/') {
+        if ($parts[1] -ne 'package.json' -and $parts[1] -ne 'package-lock.json' -and $parts[1] -notmatch '^(command|core|launcher|plugin|skills)/') {
             continue
         }
 

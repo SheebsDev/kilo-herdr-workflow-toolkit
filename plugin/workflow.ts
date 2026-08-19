@@ -7,8 +7,8 @@ import {
   refreshRunState,
   summarizeWorkers,
   WORKER_ORDER,
-} from "./workflow/model.ts";
-import type { WorkflowRun } from "./workflow/model.ts";
+} from "../core/model.ts";
+import type { WorkflowRun } from "../core/model.ts";
 import {
   createRun,
   normalizeTaskCardPath,
@@ -16,7 +16,7 @@ import {
   saveRun,
   withLockedRun,
   withRunLock,
-} from "./workflow/run-store.ts";
+} from "../core/run-store.ts";
 import {
   closeWorker,
   inspectWorker,
@@ -24,13 +24,13 @@ import {
   requireHerdrWorkspace,
   spawnWorker,
   workerErrorRecord,
-} from "./workflow/worker-service.ts";
-import { captureSourceCheckpoint } from "./workflow/source-checkpoint.ts";
+} from "../core/worker-service.ts";
+import { captureSourceCheckpoint } from "../core/source-checkpoint.ts";
 import { WorkflowSupervisor } from "./workflow/supervisor.ts";
 import {
   preflightWorkerSelections,
   resolveWorkerAgents,
-} from "./workflow/worker-profile.ts";
+} from "../core/worker-profile.ts";
 
 const workflowPlugin: Plugin = async ({ client, directory, worktree }) => {
   const workflowRole = process.env.WORKFLOW_ROLE;

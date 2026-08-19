@@ -66,7 +66,7 @@ file_hash() {
 
 is_managed_payload_path() {
   case "$1" in
-    package.json|package-lock.json|command/*|plugin/*|skills/*) return 0 ;;
+    package.json|package-lock.json|command/*|core/*|launcher/*|plugin/*|skills/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -89,7 +89,7 @@ cleanup_project_files() {
 }
 trap cleanup_project_files EXIT HUP INT TERM
 
-for payload_directory in command plugin skills; do
+for payload_directory in command core launcher plugin skills; do
   if [ -d "$repository_root/$payload_directory" ]; then
     find "$repository_root/$payload_directory" -type f -print >> "$payload_paths_file"
   fi
