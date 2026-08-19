@@ -7,6 +7,8 @@ import test from "node:test";
 
 const SHARED_MODULES = [
   "model.ts",
+  "herdr-command.ts",
+  "coordinator-notifier.ts",
   "run-store.ts",
   "skill-loader.ts",
   "source-checkpoint.ts",
@@ -38,6 +40,7 @@ test("skills and the launcher resolve from a copied toolkit layout", async () =>
 
     for (const moduleName of [
       "model.ts",
+      "herdr-command.ts",
       "skill-loader.ts",
       "worker-profile.ts",
       "worker-service.ts",

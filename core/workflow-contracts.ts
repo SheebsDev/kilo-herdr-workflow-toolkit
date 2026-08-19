@@ -27,6 +27,19 @@ export interface ProjectContext {
   hostSession?: HostSessionMetadata;
 }
 
+export interface CoordinatorNotificationBatch {
+  projectRoot: string;
+  origin: OriginMetadata;
+  notifications: readonly Pick<WorkflowNotification, "sequence" | "message">[];
+}
+
+export interface CoordinatorNotifier {
+  notify(
+    batch: CoordinatorNotificationBatch,
+    signal?: AbortSignal,
+  ): Promise<void>;
+}
+
 export interface WorkflowStartInput {
   context: ProjectContext;
   task: string;

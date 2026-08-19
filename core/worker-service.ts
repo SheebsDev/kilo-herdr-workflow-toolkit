@@ -1,10 +1,10 @@
-import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 
 import { createAgentName } from "./model.ts";
+import { runHerdrCommand } from "./herdr-command.ts";
 import type {
   SourceCheckpoint,
   WorkerDefinition,
@@ -19,8 +19,6 @@ import {
 } from "./worker-profile.ts";
 import type { WorkerLaunchConfiguration } from "./worker-profile.ts";
 
-const HERDR_TIMEOUT_MS = 120_000;
-const MAX_HERDR_OUTPUT_LENGTH = 2 * 1024 * 1024;
 const WORKFLOW_LAUNCHER_DIRECTORY = resolveWorkflowLauncherDirectory();
 
 interface WorkerSpec {
@@ -119,7 +117,7 @@ export async function spawnWorker(
   let paneId: string | undefined;
 
   try {
-    const createdRaw = await runHerdr(
+    const createdRaw = await runHerdrCommand(
       [
         "tab",
         "create",
@@ -165,7 +163,7 @@ export async function spawnWorker(
       await prependWindowsKiloShimToPanePath(paneId, projectRoot, signal);
     }
 
-    await runHerdr(
+    await runHerdrCommand(
       buildAgentStartArguments(agentName, launchConfiguration, paneId, agentArguments),
       projectRoot,
       signal,
@@ -174,7 +172,7 @@ export async function spawnWorker(
     if (windowsLaunch) {
       // The pane-local shim transports the long prompt by file. Herdr sees the
       // shim as started before the delegated Kilo TUI is ready for submission.
-      await runHerdr(
+      await runHerdrCommand(
         [
           "pane",
           "wait-output",
@@ -189,12 +187,12 @@ export async function spawnWorker(
         projectRoot,
         signal,
       );
-      await runHerdr(
+      await runHerdrCommand(
         ["agent", "send-keys", agentName, "enter"],
         projectRoot,
         signal,
       );
-      await runHerdr(
+      await runHerdrCommand(
         [
           "agent",
           "wait",
@@ -282,7 +280,7 @@ export async function inspectWorker(options: {
   }
 
   try {
-    const raw = await runHerdr(
+    const raw = await runHerdrCommand(
       ["agent", "get", worker.agentName],
       projectRoot,
       signal,
@@ -342,7 +340,7 @@ export async function waitForWorkerState(
     throw new Error("At least one Herdr worker state is required.");
   }
 
-  await runHerdr(
+  await runHerdrCommand(
     [
       "agent",
       "wait",
@@ -420,7 +418,7 @@ async function prependWindowsKiloShimToPanePath(
     "''",
   );
 
-  await runHerdr(
+  await runHerdrCommand(
     [
       "pane",
       "run",
@@ -439,7 +437,7 @@ async function submitPrompt(
   signal: AbortSignal | undefined,
   waitForWorking = false,
 ): Promise<void> {
-  await runHerdr(
+  await runHerdrCommand(
     [
       "agent",
       "prompt",
@@ -524,7 +522,7 @@ export async function closeWorker(
   }
 
   try {
-    await runHerdr(["tab", "close", worker.tabId], projectRoot, signal);
+    await runHerdrCommand(["tab", "close", worker.tabId], projectRoot, signal);
   } catch (error) {
     if (!isMissingResourceError(error)) {
       throw error;
@@ -562,7 +560,7 @@ async function getTabIdentity(
 
   try {
     parsed = parseJsonRecord(
-      await runHerdr(["tab", "get", tabId], projectRoot, signal),
+      await runHerdrCommand(["tab", "get", tabId], projectRoot, signal),
     );
   } catch (error) {
     if (isMissingResourceError(error)) {
@@ -607,7 +605,7 @@ async function getAgentIdentity(
 
   try {
     parsed = parseJsonRecord(
-      await runHerdr(["agent", "get", agentName], projectRoot, signal),
+      await runHerdrCommand(["agent", "get", agentName], projectRoot, signal),
     );
   } catch (error) {
     if (isMissingResourceError(error)) {
@@ -741,7 +739,7 @@ async function readWorkerOutput(
   try {
     const finished = state === "done" || state === "idle";
 
-    return await runHerdr(
+    return await runHerdrCommand(
       finished
         ? [
             "agent",
@@ -778,105 +776,11 @@ async function closeTabForCleanup(
   projectRoot: string,
 ): Promise<unknown | undefined> {
   try {
-    await runHerdr(["tab", "close", tabId], projectRoot);
+    await runHerdrCommand(["tab", "close", tabId], projectRoot);
     return undefined;
   } catch (error) {
     return isMissingResourceError(error) ? undefined : error;
   }
-}
-
-async function runHerdr(
-  args: string[],
-  cwd: string,
-  signal?: AbortSignal,
-  timeoutMs: number | null = HERDR_TIMEOUT_MS,
-): Promise<string> {
-  const executable = process.env.HERDR_BIN_PATH || "herdr";
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
-      cwd,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      signal,
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const finish = (error?: Error) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-
-      if (error) {
-        reject(error);
-      } else {
-        resolve(stdout.trim());
-      }
-    };
-
-    const appendOutput = (
-      current: string,
-      chunk: string,
-    ): string | undefined => {
-      const combined = current + chunk;
-
-      if (combined.length > MAX_HERDR_OUTPUT_LENGTH) {
-        child.kill();
-        finish(new Error("Herdr returned more output than the workflow accepts."));
-        return undefined;
-      }
-
-      return combined;
-    };
-
-    if (timeoutMs !== null) {
-      timeout = setTimeout(() => {
-        child.kill();
-        finish(
-          new Error(
-            `Herdr did not finish within ${timeoutMs / 1000} seconds.`,
-          ),
-        );
-      }, timeoutMs);
-    }
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    child.stdout.on("data", (chunk: string) => {
-      stdout = appendOutput(stdout, chunk) ?? stdout;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr = appendOutput(stderr, chunk) ?? stderr;
-    });
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => {
-      if (code === 0) {
-        finish();
-        return;
-      }
-
-      finish(
-        new Error(
-          [
-            `Herdr exited with code ${code}.`,
-            stderr.trim(),
-            stdout.trim(),
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        ),
-      );
-    });
-  });
 }
 
 async function abortableDelay(
