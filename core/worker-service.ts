@@ -852,10 +852,16 @@ async function abortableDelay(
 
 function shortTaskName(run: WorkflowRun): string {
   if (run.taskCardPath) {
-    return path.basename(
+    const taskCardName = path.basename(
       run.taskCardPath,
       path.extname(run.taskCardPath),
     );
+
+    const taskId = taskCardName.match(/^TASK-\d+/i);
+
+    if (taskId) {
+      return taskId[0].toUpperCase();  
+    }
   }
 
   const cleaned = run.task
@@ -863,7 +869,8 @@ function shortTaskName(run: WorkflowRun): string {
     .replace(/\s+/g, " ")
     .trim();
 
-  return cleaned.length <= 28 ? cleaned : `${cleaned.slice(0, 25)}...`;
+  const charLimit = 10;
+  return cleaned.length <= charLimit ? cleaned : `${cleaned.slice(0, charLimit)}...`;
 }
 
 function parseJsonRecord(value: string): Record<string, unknown> {
