@@ -27,6 +27,10 @@ import {
 } from "./workflow/worker-service.ts";
 import { captureSourceCheckpoint } from "./workflow/source-checkpoint.ts";
 import { WorkflowSupervisor } from "./workflow/supervisor.ts";
+import {
+  preflightWorkerSelections,
+  resolveWorkerAgents,
+} from "./workflow/worker-profile.ts";
 
 const workflowPlugin: Plugin = async ({ client, directory, worktree }) => {
   const workflowRole = process.env.WORKFLOW_ROLE;
@@ -60,8 +64,8 @@ change and reaching a stable implementation checkpoint.
 
 This launches three independent worker sessions in new Herdr tabs. Kilo
 remains the Phase 1 coordinator, and the trusted worker profiles cover Kilo,
-Claude Code, and Codex. The current schema has no worker-selection map, so
-the no-map behavior uses three Kilo workers:
+Claude Code, and Codex. The optional workerAgents map selects an agent per
+role; omitted roles default to Kilo:
 
 - test verification
 - code review
@@ -93,9 +97,31 @@ Do not call this while implementation files are still actively changing.
             .describe(
               "Optional project-relative path to the Task Card being implemented.",
             ),
+          workerAgents: tool.schema
+            .object({
+              tests: tool.schema.enum(["kilo", "claude", "codex"]).optional(),
+              "code-review": tool.schema
+                .enum(["kilo", "claude", "codex"])
+                .optional(),
+              readability: tool.schema
+                .enum(["kilo", "claude", "codex"])
+                .optional(),
+            })
+            .strict()
+            .optional()
+            .describe(
+              "Optional per-role agent selection. Omitted roles default to Kilo.",
+            ),
         },
         async execute(args, context) {
           const projectRoot = context.worktree || context.directory;
+          const workerAgents = resolveWorkerAgents(args.workerAgents);
+          await preflightWorkerSelections(workerAgents, context.abort);
+          const workspaceId = requireHerdrWorkspace();
+          const sourceCheckpoint = await captureSourceCheckpoint(
+            projectRoot,
+            context.abort,
+          );
           const run = createRun({
             task: args.task,
             originSessionId: context.sessionID,
@@ -104,12 +130,9 @@ Do not call this while implementation files are still actively changing.
               projectRoot,
               args.taskCardPath,
             ),
-            workspaceId: requireHerdrWorkspace(),
+            workspaceId,
+            workerAgents,
           });
-          const sourceCheckpoint = await captureSourceCheckpoint(
-            projectRoot,
-            context.abort,
-          );
           for (const kind of WORKER_ORDER) {
             run.workers[kind].sourceCheckpoint = sourceCheckpoint;
           }
@@ -533,6 +556,36 @@ async function launchWorkers(
     }
 
     throw saveFailure.reason;
+  }
+
+  if (WORKER_ORDER.some((kind) => run.workers[kind].state === "error")) {
+    const cleanup = await Promise.allSettled(
+      WORKER_ORDER.filter((kind) => run.workers[kind].tabId).map(async (kind) => {
+        const worker = run.workers[kind];
+        await closeWorker(run, worker, projectRoot);
+        worker.tabId = undefined;
+        worker.paneId = undefined;
+        worker.state = "stopped";
+      }),
+    );
+    const cleanupFailure = cleanup.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    if (cleanupFailure) {
+      throw new AggregateError(
+        [cleanupFailure.reason],
+        "A worker launch failed, and cleanup also failed.",
+      );
+    }
+
+    await saveRun(projectRoot, run);
+
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error("Workflow operation was aborted.");
+    }
   }
 }
 

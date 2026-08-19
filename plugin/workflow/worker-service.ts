@@ -14,7 +14,10 @@ import type {
   WorkerState,
   WorkflowRun,
 } from "./model.ts";
-import { getWorkerLaunchConfiguration } from "./worker-profile.ts";
+import {
+  getWorkerLaunchConfiguration,
+} from "./worker-profile.ts";
+import type { WorkerLaunchConfiguration } from "./worker-profile.ts";
 
 const HERDR_TIMEOUT_MS = 120_000;
 const MAX_HERDR_OUTPUT_LENGTH = 2 * 1024 * 1024;
@@ -162,17 +165,7 @@ export async function spawnWorker(
     }
 
     await runHerdr(
-      [
-        "agent",
-        "start",
-        agentName,
-        "--kind",
-        launchConfiguration.herdrKind,
-        "--pane",
-        paneId,
-        "--",
-        ...agentArguments,
-      ],
+      buildAgentStartArguments(agentName, launchConfiguration, paneId, agentArguments),
       projectRoot,
       signal,
     );
@@ -658,6 +651,25 @@ async function getAgentIdentity(
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function buildAgentStartArguments(
+  agentName: string,
+  launchConfiguration: WorkerLaunchConfiguration,
+  paneId: string,
+  launchArguments = launchConfiguration.launchArguments,
+): string[] {
+  return [
+    "agent",
+    "start",
+    agentName,
+    "--kind",
+    launchConfiguration.herdrKind,
+    "--pane",
+    paneId,
+    "--",
+    ...launchArguments,
+  ];
 }
 
 export function buildWorkerPrompt(

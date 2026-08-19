@@ -53,11 +53,10 @@ The parallel workflow must be started from a Kilo session running inside Herdr. 
 ## Worker Harnesses
 
 Phase 1 defines `kilo`, `claude`, and `codex` as trusted worker harnesses. Kilo
-is the only supported coordinator. The current `workflow_start` schema has no
-worker-selection map, so its no-map behavior is three Kilo workers, one each
-for tests, code review, and readability. The trusted profiles and persisted
-worker definitions are ready for configurable worker selection in the later
-runtime work.
+is the only supported coordinator. `workflow_start` accepts an optional
+`workerAgents` map with fixed `tests`, `code-review`, and `readability` keys;
+omitted keys default to Kilo. The selected harness and its enforcement profile
+are snapshotted in the run definition.
 
 When Claude Code or Codex worker selection is enabled, those workers require
 their executable and corresponding Herdr integration. Install missing

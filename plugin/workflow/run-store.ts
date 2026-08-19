@@ -21,7 +21,9 @@ import {
   WORKER_ORDER,
 } from "./model.ts";
 import type {
+  AgentKind,
   RoleId,
+  WorkerKind,
   WorkerDefinition,
   WorkerRecord,
   WorkflowRun,
@@ -38,12 +40,13 @@ const LOCK_WAIT_MS = 10 * 60_000;
 const STALE_LOCK_MS = 15 * 60_000;
 const STALE_RECOVERY_LOCK_MS = 30_000;
 
-interface CreateRunOptions {
+export interface CreateRunOptions {
   task: string;
   taskCardPath?: string;
   originSessionId: string;
   workspaceId: string;
   paneId?: string;
+  workerAgents?: Partial<Record<WorkerKind, AgentKind>>;
 }
 
 export function createRun(options: CreateRunOptions): WorkflowRunV2 {
@@ -52,8 +55,12 @@ export function createRun(options: CreateRunOptions): WorkflowRunV2 {
     options.paneId?.trim() ||
     process.env.HERDR_PANE_ID?.trim() ||
     options.originSessionId.trim();
+  const workerAgents = options.workerAgents ?? {};
   const workers = Object.fromEntries(
-    WORKER_ORDER.map((roleId) => [roleId, initialWorker(roleId)]),
+    WORKER_ORDER.map((roleId) => [
+      roleId,
+      initialWorker(roleId, workerAgents[roleId] ?? "kilo"),
+    ]),
   );
 
   return {
@@ -272,8 +279,8 @@ async function loadRunById(
   return assertValidRun(parsed, runId);
 }
 
-function initialWorker(roleId: string): WorkerRecord {
-  const definition = workerDefinition(roleId);
+function initialWorker(roleId: string, agentKind: AgentKind): WorkerRecord {
+  const definition = workerDefinition(roleId, agentKind);
 
   return {
     kind: roleId,
@@ -284,7 +291,7 @@ function initialWorker(roleId: string): WorkerRecord {
   };
 }
 
-function workerDefinition(roleId: string): WorkerDefinition {
+function workerDefinition(roleId: string, agentKind: AgentKind): WorkerDefinition {
   const builtIn = BUILT_IN_ROLE_DEFINITIONS.find(
     (definition) => definition.roleId === roleId,
   );
@@ -294,14 +301,14 @@ function workerDefinition(roleId: string): WorkerDefinition {
   }
 
   const launchConfiguration = getWorkerLaunchConfiguration(
-    "kilo",
+    agentKind,
     builtIn.roleId,
   );
 
   return {
     roleId: builtIn.roleId,
     label: builtIn.label,
-    agentKind: "kilo",
+    agentKind,
     skill: loadBundledSkill(builtIn.skillId),
     capabilityProfile: launchConfiguration.capabilityProfile,
     enforcement: launchConfiguration.enforcement,

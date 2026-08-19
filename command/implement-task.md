@@ -7,7 +7,8 @@ agent: code
 
 Kilo remains the Phase 1 coordinator. The trusted review-worker profiles cover
 Kilo, Claude Code, and Codex; the current no-map workflow-start behavior uses
-three Kilo workers.
+three Kilo workers. `workflow_start` also accepts an optional fixed-key
+`workerAgents` map to select a harness independently for each built-in role.
 
 Implement the requested Task Card, feature, or code change using your normal Kilo Code behavior.
 

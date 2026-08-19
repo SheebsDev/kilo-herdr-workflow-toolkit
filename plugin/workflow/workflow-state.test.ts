@@ -67,6 +67,30 @@ test("workflow notifications are durable and deduplicated by key", async () => {
   }
 });
 
+test("version-two runs persist independent worker agent selections", () => {
+  const run = createRun({
+    task: "Persist mixed worker harness selections",
+    originSessionId: "session-mixed-agents",
+    workspaceId: "workspace-mixed-agents",
+    workerAgents: {
+      tests: "codex",
+      "code-review": "claude",
+    },
+  });
+
+  assert.equal(run.workers.tests.definition?.agentKind, "codex");
+  assert.equal(run.workers["code-review"].definition?.agentKind, "claude");
+  assert.equal(run.workers.readability.definition?.agentKind, "kilo");
+  assert.equal(
+    run.workers.tests.definition?.enforcement.profile,
+    "codex-workspace-write",
+  );
+  assert.equal(
+    run.workers["code-review"].definition?.enforcement.allowsWrites,
+    false,
+  );
+});
+
 test("version-one runs are rejected without migration or deletion", async () => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), "workflow-legacy-"));
 
