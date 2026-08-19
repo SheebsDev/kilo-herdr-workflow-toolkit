@@ -142,6 +142,7 @@ export interface WorkflowMutationResult {
 }
 
 export interface WorkflowRetryResult extends WorkflowMutationResult {
+  workerRecord: WorkerRecord;
   workerResult: WorkerSummary;
 }
 

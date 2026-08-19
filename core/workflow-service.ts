@@ -459,6 +459,7 @@ export class WorkflowService {
           worker: input.worker,
           state: run.state,
           message: `${input.worker} retry started.`,
+          workerRecord: run.workers[input.worker],
           workerResult: summarizeWorkers(run)[input.worker],
         };
       },
