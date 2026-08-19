@@ -27,13 +27,14 @@ import {
   workerErrorRecord,
 } from "../core/worker-service.ts";
 import { captureSourceCheckpoint } from "../core/source-checkpoint.ts";
-import { WorkflowSupervisor } from "./workflow/supervisor.ts";
+import { HerdrCoordinatorNotifier } from "../core/coordinator-notifier.ts";
+import { WorkflowSupervisor } from "../core/supervisor.ts";
 import {
   preflightWorkerSelections,
   resolveWorkerAgents,
 } from "../core/worker-profile.ts";
 
-const workflowPlugin: Plugin = async ({ client, directory, worktree }) => {
+const workflowPlugin: Plugin = async ({ directory, worktree }) => {
   const workflowRole = process.env.WORKFLOW_ROLE;
 
   // Review workers should not expose tools that can create more workers.
@@ -41,10 +42,10 @@ const workflowPlugin: Plugin = async ({ client, directory, worktree }) => {
     return {};
   }
 
-  const supervisor = new WorkflowSupervisor(
-    client,
-    worktree || directory,
-  );
+  const supervisor = new WorkflowSupervisor({
+    notifier: new HerdrCoordinatorNotifier(),
+    projectRoot: worktree || directory,
+  });
 
   return {
     event: async ({ event }) => {
@@ -255,6 +256,7 @@ If no run ID is supplied, the most recently created workflow run is used.
                   task: run.task,
                   state: run.state,
                   workers: statuses,
+                  notifications: run.notifications ?? [],
                 },
                 null,
                 2,

@@ -151,6 +151,7 @@ export interface WorkflowNotification {
   kind: WorkflowNotificationKind;
   message: string;
   createdAt: string;
+  deliveryError?: string;
   deliveredAt?: string;
 }
 
@@ -690,6 +691,7 @@ function isOptionalNotificationArray(value: unknown): boolean {
       !isWorkflowNotificationKind(notification.kind) ||
       !isNonEmptyString(notification.message) ||
       !isIsoDate(notification.createdAt) ||
+      !isOptionalString(notification.deliveryError) ||
       !isOptionalIsoDate(notification.deliveredAt)
     ) {
       return false;

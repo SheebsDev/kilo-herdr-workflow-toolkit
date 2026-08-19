@@ -9,6 +9,7 @@ const SHARED_MODULES = [
   "model.ts",
   "herdr-command.ts",
   "coordinator-notifier.ts",
+  "supervisor.ts",
   "run-store.ts",
   "skill-loader.ts",
   "source-checkpoint.ts",

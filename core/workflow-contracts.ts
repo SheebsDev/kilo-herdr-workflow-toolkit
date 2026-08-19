@@ -10,9 +10,13 @@ import type {
   OriginMetadata,
   RoleId,
   RunState,
+  SourceCheckpoint,
+  WorkerRecord,
+  WorkerState,
   WorkerKind,
   WorkerSummary,
   WorkflowNotification,
+  WorkflowRun,
 } from "./model.ts";
 
 export interface HostSessionMetadata {
@@ -36,6 +40,39 @@ export interface CoordinatorNotificationBatch {
 export interface CoordinatorNotifier {
   notify(
     batch: CoordinatorNotificationBatch,
+    signal?: AbortSignal,
+  ): Promise<void>;
+}
+
+export interface SupervisorWorkerInspection {
+  state: WorkerState;
+  output?: string;
+  error?: string;
+  promptStarted?: boolean;
+  stateChangeSeq?: number;
+}
+
+export interface SupervisorWorkerOperations {
+  captureSourceCheckpoint(
+    projectRoot: string,
+    signal?: AbortSignal,
+  ): Promise<SourceCheckpoint>;
+  inspectWorker(options: {
+    worker: WorkerRecord;
+    projectRoot: string;
+    includeOutput: boolean;
+    signal?: AbortSignal;
+  }): Promise<SupervisorWorkerInspection>;
+  waitForWorkerState(
+    agentName: string,
+    states: Array<"blocked" | "done" | "idle" | "unknown" | "working">,
+    projectRoot: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  closeWorker(
+    run: WorkflowRun,
+    worker: WorkerRecord,
+    projectRoot: string,
     signal?: AbortSignal,
   ): Promise<void>;
 }

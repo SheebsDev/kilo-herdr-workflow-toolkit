@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
-import { createAgentName } from "../../core/model.ts";
+import {
+  createAgentName,
+  enqueueWorkflowNotification,
+} from "../../core/model.ts";
+import type { CoordinatorNotificationBatch } from "../../core/workflow-contracts.ts";
 import { createRun, createTestCheckpoint } from "./supervisor-test-helpers.ts";
 
 const runs = new Map<string, ReturnType<typeof createRun>>();
@@ -70,13 +74,16 @@ mock.module("../../core/worker-service.ts", {
   },
 });
 
-const { WorkflowSupervisor } = await import("./supervisor.ts");
+const { WorkflowSupervisor } = await import("../../core/supervisor.ts");
 
 test("unchanged completion is captured and valid results remain stable", async () => {
   resetTestState();
   const run = createWorkerRun();
   runs.set(run.id, run);
-  const supervisor = new WorkflowSupervisor(createClient(), "/test-project");
+  const supervisor = new WorkflowSupervisor({
+    notifier: createNotifier(),
+    projectRoot: "/test-project",
+  });
 
   try {
     supervisor.supervise(run.id);
@@ -116,7 +123,10 @@ for (const [label, change] of [
     const run = createWorkerRun();
     runs.set(run.id, run);
     currentCheckpoint = createTestCheckpoint(change);
-    const supervisor = new WorkflowSupervisor(createClient(), "/test-project");
+    const supervisor = new WorkflowSupervisor({
+      notifier: createNotifier(),
+      projectRoot: "/test-project",
+    });
 
     try {
       supervisor.supervise(run.id);
@@ -159,12 +169,104 @@ function createWorkerRun() {
   return run;
 }
 
-function createClient() {
+test("outbox delivery persists before notification and marks exact sequences once", async () => {
+  resetTestState();
+  const run = createRun();
+  for (const worker of Object.values(run.workers)) {
+    worker.state = "stopped";
+  }
+  const queued = enqueueWorkflowNotification(run, {
+    key: "tests:1:blocked:1",
+    kind: "worker-blocked",
+    message: "Tests need coordinator attention.",
+  });
+  runs.set(run.id, run);
+  const batches: CoordinatorNotificationBatch[] = [];
+  const supervisor = new WorkflowSupervisor({
+    notifier: createNotifier(async (batch) => {
+      batches.push(batch);
+      assert.equal(run.notifications?.[0].deliveredAt, undefined);
+      assert.equal(run.notifications?.[0].deliveryError, undefined);
+    }),
+    projectRoot: "/test-project",
+  });
+
+  try {
+    supervisor.supervise(run.id);
+    await waitFor(() => queued.deliveredAt !== undefined);
+
+    assert.equal(batches.length, 1);
+    assert.deepEqual(batches[0].origin, run.origin);
+    assert.deepEqual(
+      batches[0].notifications.map(({ sequence }) => sequence),
+      [queued.sequence],
+    );
+    assert.match(batches[0].notifications[0].message, /ENGINEERING WORKFLOW WAKE/);
+    assert.equal(run.notifications?.[0].deliveryError, undefined);
+
+    supervisor.supervise(run.id);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(batches.length, 1);
+  } finally {
+    await supervisor.dispose();
+    runs.delete(run.id);
+  }
+});
+
+test("failed delivery remains pending with failure data and a new supervisor can retry", async () => {
+  resetTestState();
+  const run = createRun();
+  for (const worker of Object.values(run.workers)) {
+    worker.state = "stopped";
+  }
+  const queued = enqueueWorkflowNotification(run, {
+    key: "tests:1:error:1",
+    kind: "worker-error",
+    message: "Tests failed.",
+  });
+  runs.set(run.id, run);
+  const firstSupervisor = new WorkflowSupervisor({
+    notifier: createNotifier(async () => {
+      throw new Error("origin pane is missing");
+    }),
+    projectRoot: "/test-project",
+  });
+
+  try {
+    firstSupervisor.supervise(run.id);
+    await waitFor(() => queued.deliveryError !== undefined);
+    assert.equal(queued.deliveredAt, undefined);
+    assert.equal(queued.deliveryError, "origin pane is missing");
+  } finally {
+    await firstSupervisor.dispose();
+  }
+
+  const retryBatches: CoordinatorNotificationBatch[] = [];
+  const restartedSupervisor = new WorkflowSupervisor({
+    notifier: createNotifier(async (batch) => {
+      retryBatches.push(batch);
+    }),
+    projectRoot: "/test-project",
+  });
+
+  try {
+    restartedSupervisor.supervise(run.id);
+    await waitFor(() => queued.deliveredAt !== undefined);
+    assert.equal(retryBatches.length, 1);
+    assert.equal(queued.deliveryError, undefined);
+  } finally {
+    await restartedSupervisor.dispose();
+    runs.delete(run.id);
+  }
+});
+
+function createNotifier(
+  notify: (batch: CoordinatorNotificationBatch) => Promise<void> = async () =>
+    undefined,
+) {
   return {
-    session: {
-      promptAsync: async () => undefined,
-    },
-  } as never;
+    notify,
+  };
 }
 
 function resetTestState(): void {

@@ -20,7 +20,7 @@ import {
 import type { WorkflowRunV2, WorkerRecord } from "../../core/model.ts";
 import type { ProjectContext } from "../../core/workflow-contracts.ts";
 import { createRun, loadRun, saveNewRun, saveRun } from "../../core/run-store.ts";
-import { isWorkerInspectionStale } from "./supervisor.ts";
+import { isWorkerInspectionStale } from "../../core/supervisor.ts";
 
 function createContext(sessionId: string, workspaceId: string): ProjectContext {
   return {

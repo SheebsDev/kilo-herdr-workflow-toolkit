@@ -118,7 +118,7 @@ mock.module("../../core/worker-service.ts", {
   },
 });
 
-mock.module("./supervisor.ts", {
+mock.module("../../core/supervisor.ts", {
   exports: {
     WorkflowSupervisor: class {
       supervise(runId: string): void {

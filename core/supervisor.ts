@@ -1,40 +1,55 @@
-import type { PluginInput } from "@kilocode/plugin";
-
 import {
   enqueueWorkflowNotification,
   refreshRunState,
   WORKER_ORDER,
-} from "../../core/model.ts";
+} from "./model.ts";
 import type {
   SourceCheckpoint,
   WorkerKind,
   WorkerRecord,
   WorkflowRun,
-} from "../../core/model.ts";
+} from "./model.ts";
 import {
   captureSourceCheckpoint,
   sourceCheckpointsEqual,
-} from "../../core/source-checkpoint.ts";
+} from "./source-checkpoint.ts";
 import {
   listRuns,
   loadRun,
   saveRun,
   withLockedRun,
-} from "../../core/run-store.ts";
+} from "./run-store.ts";
 import {
   closeWorker,
   errorMessage,
   inspectWorker,
   waitForWorkerState,
-} from "../../core/worker-service.ts";
+} from "./worker-service.ts";
+import type {
+  CoordinatorNotifier,
+  SupervisorWorkerInspection,
+  SupervisorWorkerOperations,
+} from "./workflow-contracts.ts";
 
 const MAX_CAPTURED_OUTPUT_LENGTH = 256 * 1024;
 const BLOCKED_CONFIRMATION_MS = 30_000;
 const DELIVERY_RETRY_LIMIT = 5;
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
+const MAX_DELIVERY_ERROR_LENGTH = 4 * 1024;
 
-type KiloClient = PluginInput["client"];
+const DEFAULT_WORKER_OPERATIONS: SupervisorWorkerOperations = {
+  captureSourceCheckpoint,
+  closeWorker,
+  inspectWorker,
+  waitForWorkerState,
+};
+
+export interface WorkflowSupervisorOptions {
+  notifier: CoordinatorNotifier;
+  projectRoot: string;
+  workerOperations?: SupervisorWorkerOperations;
+}
 
 interface WorkerWatch {
   controller: AbortController;
@@ -49,8 +64,9 @@ type ReconciledState =
   | "working";
 
 export class WorkflowSupervisor {
-  private readonly client: KiloClient;
+  private readonly notifier: CoordinatorNotifier;
   private readonly projectRoot: string;
+  private readonly workerOperations: SupervisorWorkerOperations;
   private readonly watches = new Map<string, WorkerWatch>();
   private readonly preparations = new Map<string, Promise<void>>();
   private readonly deliveries = new Map<string, Promise<void>>();
@@ -59,11 +75,14 @@ export class WorkflowSupervisor {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly lifecycleController = new AbortController();
   private disposed = false;
 
-  constructor(client: KiloClient, projectRoot: string) {
-    this.client = client;
-    this.projectRoot = projectRoot;
+  constructor(options: WorkflowSupervisorOptions) {
+    this.notifier = options.notifier;
+    this.projectRoot = options.projectRoot;
+    this.workerOperations =
+      options.workerOperations ?? DEFAULT_WORKER_OPERATIONS;
   }
 
   supervise(runId: string): void {
@@ -110,6 +129,9 @@ export class WorkflowSupervisor {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.lifecycleController.abort(
+      new Error("Workflow supervision is shutting down."),
+    );
 
     for (const watch of this.watches.values()) {
       watch.controller.abort(new Error("Workflow supervision is shutting down."));
@@ -121,9 +143,10 @@ export class WorkflowSupervisor {
 
     this.deliveryRetryTimers.clear();
 
-    await Promise.allSettled(
-      [...this.watches.values()].map((watch) => watch.promise),
-    );
+    await Promise.allSettled([
+      ...[...this.watches.values()].map((watch) => watch.promise),
+      ...this.deliveries.values(),
+    ]);
   }
 
   private async prepareRun(runId: string): Promise<void> {
@@ -197,7 +220,7 @@ export class WorkflowSupervisor {
         return;
       }
 
-      const inspection = await inspectWorker({
+      const inspection = await this.workerOperations.inspectWorker({
         worker,
         projectRoot: this.projectRoot,
         includeOutput: false,
@@ -230,7 +253,7 @@ export class WorkflowSupervisor {
             signal,
           );
         } else {
-          const stateWait = waitForWorkerState(
+          const stateWait = this.workerOperations.waitForWorkerState(
             worker.agentName,
             ["blocked", "done", "idle", "unknown"],
             this.projectRoot,
@@ -256,7 +279,7 @@ export class WorkflowSupervisor {
     runId: string,
     kind: WorkerKind,
     attempt: number,
-    inspection: Awaited<ReturnType<typeof inspectWorker>>,
+    inspection: SupervisorWorkerInspection,
     signal: AbortSignal,
   ): Promise<ReconciledState> {
     const state = await withLockedRun(
@@ -338,7 +361,10 @@ export class WorkflowSupervisor {
           let current: SourceCheckpoint;
 
           try {
-            current = await captureSourceCheckpoint(this.projectRoot, signal);
+            current = await this.workerOperations.captureSourceCheckpoint(
+              this.projectRoot,
+              signal,
+            );
           } catch (error) {
             if (signal.aborted) {
               throw error;
@@ -428,7 +454,12 @@ export class WorkflowSupervisor {
     const tabId = worker.tabId;
 
     try {
-      await closeWorker(run, worker, this.projectRoot, signal);
+      await this.workerOperations.closeWorker(
+        run,
+        worker,
+        this.projectRoot,
+        signal,
+      );
     } catch (error) {
       await withLockedRun(
         this.projectRoot,
@@ -512,7 +543,7 @@ export class WorkflowSupervisor {
     agentName: string,
     signal: AbortSignal,
   ): Promise<void> {
-    const stateWait = waitForWorkerState(
+    const stateWait = this.workerOperations.waitForWorkerState(
       agentName,
       ["working", "done", "idle", "unknown"],
       this.projectRoot,
@@ -534,7 +565,7 @@ export class WorkflowSupervisor {
       return;
     }
 
-    const inspection = await inspectWorker({
+    const inspection = await this.workerOperations.inspectWorker({
       worker,
       projectRoot: this.projectRoot,
       includeOutput: false,
@@ -670,29 +701,38 @@ export class WorkflowSupervisor {
   }
 
   private async performDeliveries(runId: string): Promise<void> {
+    // The run lock protects durable state transitions, not the external prompt.
+    // A second process can therefore produce an at-least-once duplicate wake.
     while (!this.disposed) {
       const run = await loadRun(this.projectRoot, runId);
       const pending = (run.notifications ?? []).filter(
         (notification) => !notification.deliveredAt,
       );
 
-      if (!run.originSessionId || pending.length === 0) {
+      if (!run.origin || pending.length === 0) {
         return;
       }
 
-      await this.client.session.promptAsync({
-        path: { id: run.originSessionId },
-        query: { directory: this.projectRoot },
-        body: {
-          parts: [
-            {
-              type: "text",
-              text: buildWakePrompt(run, pending.map(({ message }) => message)),
-            },
-          ],
-        },
-        throwOnError: true,
-      });
+      try {
+        await this.notifier.notify(
+          {
+            projectRoot: this.projectRoot,
+            origin: run.origin,
+            notifications: pending.map(({ sequence, message }) => ({
+              sequence,
+              message: buildWakePrompt(run, [message]),
+            })),
+          },
+          this.lifecycleController.signal,
+        );
+      } catch (error) {
+        await this.recordDeliveryFailure(
+          runId,
+          pending.map(({ sequence }) => sequence),
+          error,
+        );
+        throw error;
+      }
 
       const deliveredSequences = new Set(
         pending.map((notification) => notification.sequence),
@@ -709,6 +749,7 @@ export class WorkflowSupervisor {
               deliveredSequences.has(notification.sequence) &&
               !notification.deliveredAt
             ) {
+              notification.deliveryError = undefined;
               notification.deliveredAt = deliveredAt;
             }
           }
@@ -718,6 +759,34 @@ export class WorkflowSupervisor {
         },
       );
     }
+  }
+
+  private async recordDeliveryFailure(
+    runId: string,
+    sequences: number[],
+    error: unknown,
+  ): Promise<void> {
+    const deliveryError = boundDeliveryError(errorMessage(error));
+    const sequenceSet = new Set(sequences);
+
+    await withLockedRun(
+      this.projectRoot,
+      runId,
+      undefined,
+      async (current) => {
+        for (const notification of current.notifications ?? []) {
+          if (
+            sequenceSet.has(notification.sequence) &&
+            !notification.deliveredAt
+          ) {
+            notification.deliveryError = deliveryError;
+          }
+        }
+
+        refreshRunState(current);
+        await saveRun(this.projectRoot, current);
+      },
+    );
   }
 
   private scheduleDeliveryRetry(runId: string): void {
@@ -747,6 +816,14 @@ export class WorkflowSupervisor {
     timer.unref();
     this.deliveryRetryTimers.set(runId, timer);
   }
+}
+
+function boundDeliveryError(error: string): string {
+  if (error.length <= MAX_DELIVERY_ERROR_LENGTH) {
+    return error;
+  }
+
+  return `${error.slice(0, MAX_DELIVERY_ERROR_LENGTH)}\n[Delivery error truncated.]`;
 }
 
 function watchKey(runId: string, kind: WorkerKind, attempt: number): string {
