@@ -24,6 +24,8 @@ const SHARED_MODULES = [
   "install-transaction.ts",
   "filesystem-tree.ts",
   "filesystem-install-adapter.ts",
+  "claude-json-install-adapter.ts",
+  "codex-toml-install-adapter.ts",
 ] as const;
 
 test("host-neutral workflow modules load without Kilo plugin imports", async () => {
