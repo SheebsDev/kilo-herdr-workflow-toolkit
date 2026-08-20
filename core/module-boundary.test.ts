@@ -19,6 +19,7 @@ const SHARED_MODULES = [
   "workflow-contracts.ts",
   "mcp-project-context.ts",
   "ownership-manifest.ts",
+  "install-plan.ts",
 ] as const;
 
 test("host-neutral workflow modules load without Kilo plugin imports", async () => {
