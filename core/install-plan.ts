@@ -28,6 +28,7 @@ import {
   isJsonValue,
 } from "./model.ts";
 import type { AgentKind, JsonValue } from "./model.ts";
+import { snapshotFileSystemTree } from "./filesystem-tree.ts";
 import { getTrustedWorkerProfile, isWorkerExecutableAvailable } from "./worker-profile.ts";
 
 export const INSTALL_SELECTIONS = [...AGENT_KINDS, "all"] as const;
@@ -59,9 +60,10 @@ export interface DestinationSnapshot {
 
 export interface DirectorySnapshotEntry {
   readonly path: string;
-  readonly kind: "file" | "directory";
+  readonly kind: "file" | "directory" | "link";
   readonly sha256: string;
   readonly contentBase64?: string;
+  readonly linkTarget?: string;
 }
 
 export type PlannedOwnershipState =
@@ -787,11 +789,6 @@ async function planPayloadChange(
       `Destination conflict at ${destinationPath}. Re-run with --force only after deciding to replace unrelated content.`,
     ]);
   } else {
-    if (!snapshot.content && snapshot.content !== "") {
-      throw new InstallPreflightError([
-        `Cannot safely replace ${destinationPath}: the exact prior file content was not available for rollback.`,
-      ]);
-    }
     action = "replace";
     if (state === "unrelated") {
       warning = `Unrelated content will be replaced explicitly: ${destinationPath}.`;
@@ -806,7 +803,6 @@ async function planPayloadChange(
       existed: snapshot.exists,
       kind: snapshot.kind,
       sha256: snapshot.sha256,
-      content: snapshot.content,
     });
   }
   ownedChanges.push({
@@ -995,18 +991,12 @@ async function planManifestRemoval(
       });
       continue;
     }
-    if (!snapshot.content && snapshot.content !== "") {
-      throw new InstallPreflightError([
-        `Cannot safely uninstall ${destinationPath}: the exact prior file content was not available for rollback.`,
-      ]);
-    }
     rollbackInputs.push({
       type: "file",
       path: destinationPath,
       existed: true,
       kind: snapshot.kind,
       sha256: snapshot.sha256,
-      content: snapshot.content,
     });
     ownedChanges.push({
       id: record.id,
@@ -1306,17 +1296,11 @@ async function planOwnedContainerRemoval(
     });
     return;
   }
-  if (!snapshot.entries) {
-    throw new InstallPreflightError([
-      `Cannot safely remove ${artifactType} ${destinationPath}: a complete prior snapshot was not available for rollback.`,
-    ]);
-  }
   rollbackInputs.push({
     type: artifactType,
     path: destinationPath,
     existed: true,
     sha256: candidateType === "directory" ? snapshot.snapshotSha256 : snapshot.treeSha256,
-    entries: snapshot.entries,
   });
   ownedChanges.push({
     id,
@@ -1462,18 +1446,12 @@ async function planStaleOwnedFiles(
       });
       continue;
     }
-    if (!snapshot.content && snapshot.content !== "") {
-      throw new InstallPreflightError([
-        `Cannot safely remove stale file ${destinationPath}: exact prior content was not available.`,
-      ]);
-    }
     rollbackInputs.push({
       type: "file",
       path: destinationPath,
       existed: true,
       kind: snapshot.kind,
       sha256: snapshot.sha256,
-      content: snapshot.content,
     });
     ownedChanges.push({
       id: record.id,
@@ -1856,11 +1834,12 @@ async function readDestination(
     };
   }
   if (!info.isFile()) return { exists: true, kind: "other" };
-  const content = readFileSync(absolutePath, "utf8");
+  const contentBytes = readFileSync(absolutePath);
+  const content = contentBytes.toString("utf8");
   return {
     exists: true,
     kind: "file",
-    sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+    sha256: createHash("sha256").update(contentBytes).digest("hex"),
     content,
   };
 }
@@ -1869,43 +1848,16 @@ function readDirectorySnapshot(directoryPath: string): {
   sha256: string;
   entries: DirectorySnapshotEntry[];
 } {
-  const hash = createHash("sha256");
-  const snapshotEntries: DirectorySnapshotEntry[] = [];
-  const visit = (currentPath: string, relativePath: string): void => {
-    const entries = readdirSync(currentPath, { withFileTypes: true }).sort((left, right) =>
-      left.name.localeCompare(right.name),
-    );
-    for (const entry of entries) {
-      const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) throw new Error(`Destination contains a symlink: ${childRelativePath}`);
-      const childPath = path.join(currentPath, entry.name);
-      if (entry.isDirectory()) {
-        hash.update(`D:${childRelativePath}`, "utf8");
-        snapshotEntries.push({
-          path: childRelativePath,
-          kind: "directory",
-          sha256: createHash("sha256").update(childRelativePath, "utf8").digest("hex"),
-        });
-        visit(childPath, childRelativePath);
-      }
-      else if (entry.isFile()) {
-        const content = readFileSync(childPath);
-        const sha256 = createHash("sha256").update(content).digest("hex");
-        hash.update(`F:${childRelativePath}`, "utf8");
-        hash.update(content);
-        snapshotEntries.push({
-          path: childRelativePath,
-          kind: "file",
-          sha256,
-          contentBase64: content.toString("base64"),
-        });
-      } else {
-        throw new Error(`Destination contains an unsupported entry: ${childRelativePath}`);
-      }
-    }
+  const snapshot = snapshotFileSystemTree(directoryPath, { allowInternalLinks: true });
+  return {
+    sha256: snapshot.sha256,
+    entries: snapshot.entries.map((entry) => ({
+      path: entry.path,
+      kind: entry.kind,
+      sha256: entry.sha256,
+      linkTarget: entry.linkTarget,
+    })),
   };
-  visit(directoryPath, "");
-  return { sha256: hash.digest("hex"), entries: snapshotEntries };
 }
 
 function readConfigSnapshot(

@@ -21,6 +21,9 @@ const SHARED_MODULES = [
   "ownership-manifest.ts",
   "install-plan.ts",
   "executable-install-plan.ts",
+  "install-transaction.ts",
+  "filesystem-tree.ts",
+  "filesystem-install-adapter.ts",
 ] as const;
 
 test("host-neutral workflow modules load without Kilo plugin imports", async () => {

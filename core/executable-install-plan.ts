@@ -272,6 +272,8 @@ export interface PreparedTransition {
   readonly transitionId: string;
   readonly postimage: ResourcePostimage;
   readonly stagingHandle?: unknown;
+  /** Private artifacts retained only when rollback reports residual state. */
+  readonly recoveryArtifacts?: readonly string[];
 }
 
 export interface TransitionReceipt {

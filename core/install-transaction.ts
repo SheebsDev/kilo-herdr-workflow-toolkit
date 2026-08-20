@@ -37,6 +37,7 @@ export interface InstallTransactionResidual {
     | "transaction-postimage-retained"
     | "rollback-postcondition-failed";
   readonly observed?: TransitionObservation;
+  readonly recoveryArtifacts: readonly string[];
 }
 
 export interface InstallRollbackResult {
@@ -332,12 +333,12 @@ class InstallTransaction {
         result.errors,
       );
       if (!before) {
-        addResidual(result, transition, "unknown-state");
+        addResidual(result, entry, "unknown-state");
         continue;
       }
       if (observationMatchesRollbackBaseline(transition, before)) continue;
       if (!observationIsSafelyCompensatable(transition, before)) {
-        addResidual(result, transition, "unknown-state", before);
+        addResidual(result, entry, "unknown-state", before);
         continue;
       }
 
@@ -359,9 +360,9 @@ class InstallTransaction {
       );
       if (after && observationMatchesRollbackBaseline(transition, after)) continue;
       if (after && observationIsSafelyCompensatable(transition, after)) {
-        addResidual(result, transition, "transaction-postimage-retained", after);
+        addResidual(result, entry, "transaction-postimage-retained", after);
       } else {
-        addResidual(result, transition, "rollback-postcondition-failed", after);
+        addResidual(result, entry, "rollback-postcondition-failed", after);
       }
     }
 
@@ -443,6 +444,17 @@ function validatePrepared(
   if (!resourcePostimagesEqual(prepared.postimage, transition.desired)) {
     throw new Error(
       `Transition "${transition.id}" staged output does not match its planned fingerprint.`,
+    );
+  }
+  if (
+    prepared.recoveryArtifacts !== undefined &&
+    (!Array.isArray(prepared.recoveryArtifacts) ||
+      !prepared.recoveryArtifacts.every((artifact) =>
+        typeof artifact === "string" && pathIsAbsolute(artifact)
+      ))
+  ) {
+    throw new Error(
+      `Transition "${transition.id}" returned invalid private recovery artifacts.`,
     );
   }
 }
@@ -651,17 +663,25 @@ function resourcePostimagesEqual(
 
 function addResidual(
   result: MutableRollbackResult,
-  transition: InstallTransition,
+  entry: TransactionEntry,
   reason: InstallTransactionResidual["reason"],
   observed?: TransitionObservation,
 ): void {
+  const transition = entry.context.transition;
   if (result.residuals.some((entry) => entry.transitionId === transition.id)) return;
   result.residuals.push({
     transitionId: transition.id,
     target: transition.target,
     reason,
     observed,
+    recoveryArtifacts: Object.freeze([
+      ...(entry.prepared?.recoveryArtifacts ?? []),
+    ]),
   });
+}
+
+function pathIsAbsolute(value: string): boolean {
+  return /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value);
 }
 
 function cloneAndValidatePlan(value: unknown): ExecutableInstallPlan {
