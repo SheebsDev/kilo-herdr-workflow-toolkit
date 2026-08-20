@@ -252,7 +252,20 @@ export interface CompileExecutableInstallPlanRequest {
 export interface TransitionObservation {
   readonly transitionId: string;
   readonly state: ResourcePostimage;
-  readonly semantics?: readonly OpaqueSemanticPostimage[];
+  /**
+   * Opaque adapters report only the planned semantic identities here. This
+   * lets rollback prove a bounded inverse even when unrelated bytes in the
+   * shared resource changed after apply.
+   */
+  readonly semantics?: readonly ObservedOpaqueSemanticState[];
+}
+
+export interface ObservedOpaqueSemanticState {
+  readonly semanticId: string;
+  readonly harness: AgentKind;
+  readonly key: string;
+  readonly state: "absent" | "value";
+  readonly valueSha256?: string;
 }
 
 export interface PreparedTransition {
@@ -266,8 +279,14 @@ export interface TransitionReceipt {
   readonly operation: "apply" | "rollback";
   readonly before: ResourcePostimage;
   readonly after: ResourcePostimage;
-  readonly semantics?: readonly OpaqueSemanticPostimage[];
+  /** Semantic state after the acknowledged operation. */
+  readonly semantics?: readonly ObservedOpaqueSemanticState[];
 }
+
+export type PreparedTransitionDisposition =
+  | "committed"
+  | "rolled-back"
+  | "residual";
 
 export interface TransitionAdapterContext {
   readonly plan: ExecutableInstallPlan;
@@ -298,6 +317,12 @@ export interface InstallTransitionAdapter {
     receipt: TransitionReceipt | undefined,
     signal: AbortSignal,
   ): Promise<TransitionReceipt>;
+  cleanup(
+    context: TransitionAdapterContext,
+    prepared: PreparedTransition | undefined,
+    disposition: PreparedTransitionDisposition,
+    signal: AbortSignal,
+  ): Promise<void>;
 }
 
 export function compileExecutableInstallPlan(
@@ -1102,7 +1127,9 @@ function compilePhysicalTransitions(
     const precondition = findPrecondition(preflight, first);
     const baseline = fileBaseline(precondition, first.id);
     const adapterKind = requireAdapterKind(first);
-    const adapterChanges = changes.map(toOpaqueAdapterChange).sort((left, right) =>
+    const adapterChanges = changes.map((change) =>
+      toOpaqueAdapterChange(change, preflight.rollbackInputs)
+    ).sort((left, right) =>
       `${left.key}\0${left.semanticId}`.localeCompare(`${right.key}\0${right.semanticId}`),
     );
     const semantics = adapterChanges.map((change) => ({
@@ -1845,19 +1872,31 @@ function assertNoRetainedProjectionUnder(
   }
 }
 
-function toOpaqueAdapterChange(change: PlannedOwnedChange): OpaqueAdapterChange {
+function toOpaqueAdapterChange(
+  change: PlannedOwnedChange,
+  rollbackInputs: readonly RollbackInput[],
+): OpaqueAdapterChange {
   const action = change.action === "create" || change.action === "replace"
     ? "set"
     : change.action === "restore"
       ? "restore"
       : "remove";
+  let expectedValueSha256 = change.sha256;
+  if (change.artifactType === "config-registration") {
+    const key = requireSemanticKey(change);
+    const rollback = findConfigRollback(rollbackInputs, change, key);
+    if (!rollback) {
+      throw new Error(`Opaque config change "${change.id}" has no exact rollback input.`);
+    }
+    expectedValueSha256 = rollback.sha256;
+  }
   return {
     semanticId: change.id,
     harness: requireSingleHarness(change),
     key: requireSemanticKey(change),
     action,
     desiredValue: change.desiredValue === undefined ? undefined : cloneJson(change.desiredValue),
-    expectedValueSha256: change.sha256,
+    expectedValueSha256,
   };
 }
 

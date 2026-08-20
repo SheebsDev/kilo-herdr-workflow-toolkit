@@ -99,6 +99,10 @@ test("opaque configuration changes sharing one file compile into one transition 
   assert.deepEqual(opaque[0].logicalChangeIds, ["claude-one", "claude-two"]);
   assert.equal(opaque[0].stage.changes.length, 2);
   assert.deepEqual(
+    opaque[0].stage.changes.map((change) => change.expectedValueSha256),
+    [hashOwnedValue("prior-0"), hashOwnedValue("prior-1")],
+  );
+  assert.deepEqual(
     plan.projection.manifest?.configRegistrations.map((record) => record.key),
     ["mcpServers.one", "mcpServers.two"],
   );
