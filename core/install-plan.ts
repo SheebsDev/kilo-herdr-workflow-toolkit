@@ -84,6 +84,13 @@ export interface DestinationPrecondition {
   readonly priorContent?: string;
 }
 
+export interface RequiredParentDirectory {
+  readonly path: string;
+  readonly relativePath: string;
+  readonly harnesses: readonly AgentKind[];
+  readonly exists: false;
+}
+
 export interface FileRollbackInput {
   readonly type: "file";
   readonly path: string;
@@ -140,6 +147,19 @@ export interface PlannedOwnedChange {
   readonly action: PlannedChangeAction;
   readonly sha256?: string;
   readonly desiredValue?: JsonValue;
+  readonly semanticKey?: string;
+  readonly adapterKind?: "claude-json" | "codex-toml" | "inserted-block";
+  readonly ownershipState?: PlannedOwnershipState;
+  readonly preservationReason?:
+    | "modified"
+    | "missing"
+    | "shared"
+    | "missing-restore-data";
+  readonly dependencyInput?: {
+    readonly packageManager: "npm";
+    readonly packageNames: readonly string[];
+    readonly lockfilePath?: string;
+  };
   readonly warning?: string;
 }
 
@@ -162,6 +182,7 @@ export interface InstallPlan {
   readonly destinationRoot: string;
   readonly sourceInventory: readonly SourceInventoryEntry[];
   readonly destinationPreconditions: readonly DestinationPrecondition[];
+  readonly requiredParentDirectories: readonly RequiredParentDirectory[];
   readonly ownedChanges: readonly PlannedOwnedChange[];
   readonly rollbackInputs: readonly RollbackInput[];
   readonly prerequisites: readonly string[];
@@ -184,6 +205,9 @@ export interface InstallConfigSnapshot {
   readonly value?: JsonValue;
   readonly content?: string;
   readonly sha256?: string;
+  readonly snapshotSha256?: string;
+  readonly treeSha256?: string;
+  readonly entries?: readonly DirectorySnapshotEntry[];
 }
 
 export interface InstallTrustTarget {
@@ -408,6 +432,12 @@ export async function buildInstallPlan(
 
   if (failures.length > 0) throw new InstallPreflightError(failures);
 
+  const requiredParentDirectories = await inspectRequiredParentDirectories(
+    ownedChanges,
+    destinationRoot,
+    backend,
+  );
+
   const plan: InstallPlan = {
     operation,
     scope: request.scope,
@@ -416,6 +446,7 @@ export async function buildInstallPlan(
     destinationRoot,
     sourceInventory,
     destinationPreconditions,
+    requiredParentDirectories,
     ownedChanges,
     rollbackInputs,
     prerequisites: prerequisiteNames,
@@ -880,6 +911,9 @@ async function planConfigChanges(
       action,
       sha256: hashOwnedValue(target.installedValue),
       desiredValue: target.installedValue,
+      semanticKey: target.key,
+      adapterKind: target.format === "json" ? "claude-json" : "codex-toml",
+      ownershipState: state,
       warning,
     });
   }
@@ -1048,6 +1082,10 @@ async function planManifestRemoval(
         destinationRelativePath: record.path,
         action: "preserve",
         sha256: record.installedValueSha256,
+        semanticKey: record.key,
+        adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+        ownershipState: state,
+        preservationReason: state === "owned-modified" ? "modified" : "missing",
         warning: message,
       });
       continue;
@@ -1074,6 +1112,9 @@ async function planManifestRemoval(
       destinationRelativePath: record.path,
       action: "remove",
       sha256: record.installedValueSha256,
+      semanticKey: record.key,
+      adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+      ownershipState: state,
     });
   }
 }
@@ -1166,6 +1207,8 @@ async function planManifestDirectoriesAndDependencies(
         destinationRelativePath: record.path,
         action: "preserve",
         sha256: record.blockSha256,
+        semanticKey: record.marker,
+        adapterKind: "inserted-block",
         warning: message,
       });
       continue;
@@ -1190,6 +1233,8 @@ async function planManifestDirectoriesAndDependencies(
       destinationRelativePath: record.path,
       action: "remove",
       sha256: record.blockSha256,
+      semanticKey: record.marker,
+      adapterKind: "inserted-block",
     });
   }
 }
@@ -1339,6 +1384,12 @@ async function planDisplacedValues(
         destinationRelativePath: record.path,
         action: "preserve",
         sha256: record.installedValueSha256,
+        semanticKey: record.key,
+        adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+        ownershipState: state,
+        preservationReason: comparison.state === "missing-restore-data"
+          ? "missing-restore-data"
+          : "modified",
         warning: message,
       });
       continue;
@@ -1361,6 +1412,9 @@ async function planDisplacedValues(
       action: "restore",
       sha256: hashOwnedValue(comparison.value),
       desiredValue: comparison.value,
+      semanticKey: record.key,
+      adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+      ownershipState: state,
     });
   }
 }
@@ -1530,6 +1584,8 @@ async function planStaleOwnedContainersAndRegistrations(
         destinationRelativePath: record.path,
         action: "preserve",
         sha256: record.blockSha256,
+        semanticKey: record.marker,
+        adapterKind: "inserted-block",
         warning: message,
       });
       continue;
@@ -1549,6 +1605,8 @@ async function planStaleOwnedContainersAndRegistrations(
       destinationRelativePath: record.path,
       action: "remove",
       sha256: record.blockSha256,
+      semanticKey: record.marker,
+      adapterKind: "inserted-block",
     });
   }
 
@@ -1594,11 +1652,16 @@ async function planStaleOwnedContainersAndRegistrations(
       ? await backend.readConfig(target, destinationPath)
       : readConfigSnapshot(target, destinationPath);
     const unchanged = snapshot.value !== undefined && hashOwnedValue(snapshot.value) === record.installedValueSha256;
+    const ownershipState: PlannedOwnershipState = unchanged
+      ? "owned-unchanged"
+      : snapshot.exists
+        ? "owned-modified"
+        : "owned-missing";
     addConfigPrecondition(
       destinationRoot,
       record.path,
       snapshot,
-      unchanged ? "owned-unchanged" : snapshot.exists ? "owned-modified" : "owned-missing",
+      ownershipState,
       record.installedValueSha256,
       destinationPreconditions,
       preconditionByPath,
@@ -1620,6 +1683,10 @@ async function planStaleOwnedContainersAndRegistrations(
         destinationRelativePath: record.path,
         action: "preserve",
         sha256: record.installedValueSha256,
+        semanticKey: record.key,
+        adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+        ownershipState,
+        preservationReason: snapshot.exists ? "modified" : "missing",
         warning: message,
       });
       continue;
@@ -1642,8 +1709,55 @@ async function planStaleOwnedContainersAndRegistrations(
       destinationRelativePath: record.path,
       action: "remove",
       sha256: record.installedValueSha256,
+      semanticKey: record.key,
+      adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+      ownershipState,
     });
   }
+}
+
+async function inspectRequiredParentDirectories(
+  changes: readonly PlannedOwnedChange[],
+  destinationRoot: string,
+  backend: InstallPreflightBackend,
+): Promise<RequiredParentDirectory[]> {
+  const harnessesByPath = new Map<string, Set<AgentKind>>();
+  for (const change of changes) {
+    if (change.action !== "create") continue;
+    let relativePath = path.posix.dirname(change.destinationRelativePath);
+    while (relativePath !== ".") {
+      const harnesses = harnessesByPath.get(relativePath) ?? new Set<AgentKind>();
+      for (const harness of change.harnesses) harnesses.add(harness);
+      harnessesByPath.set(relativePath, harnesses);
+      relativePath = path.posix.dirname(relativePath);
+    }
+  }
+
+  const required: RequiredParentDirectory[] = [];
+  for (const relativePath of [...harnessesByPath.keys()].sort((left, right) => {
+    const depth = left.split("/").length - right.split("/").length;
+    return depth || left.localeCompare(right);
+  })) {
+    const absolutePath = resolveDestination(destinationRoot, relativePath);
+    const snapshot = await readDestination(backend, absolutePath);
+    if (snapshot.exists) {
+      if (snapshot.kind !== "directory") {
+        throw new InstallPreflightError([
+          `Required parent path is not a directory: ${absolutePath}.`,
+        ]);
+      }
+      continue;
+    }
+    required.push({
+      path: absolutePath,
+      relativePath,
+      harnesses: [...harnessesByPath.get(relativePath)!].sort(
+        (left, right) => AGENT_KINDS.indexOf(left) - AGENT_KINDS.indexOf(right),
+      ),
+      exists: false,
+    });
+  }
+  return required;
 }
 
 function addFilePrecondition(

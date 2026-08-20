@@ -312,6 +312,18 @@ export function validateOwnershipManifest(
   validateInsertedBlocks(manifest, options);
   validateDisplacedValues(manifest, options);
   validateResidualOwnership(manifest, options);
+  assertUnique(
+    [
+      ...manifest.files,
+      ...manifest.directories,
+      ...manifest.dependencies,
+      ...manifest.configRegistrations,
+      ...manifest.insertedBlocks,
+      ...manifest.displacedValues,
+      ...manifest.residualOwnership,
+    ].map((record) => record.id),
+    "record IDs",
+  );
 
   const knownHarnesses = new Set(manifest.harnesses);
   for (const record of allRecords(manifest)) {

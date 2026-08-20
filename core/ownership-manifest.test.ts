@@ -115,6 +115,13 @@ test("malformed, duplicate, unsupported, absolute, traversal, and workflow paths
     { ...manifest, files: [{ ...manifest.files[0], path: ".workflow/runs.json" }] },
     { ...manifest, files: [{ ...manifest.files[0], path: ".WORKFLOW/runs.json" }] },
     { ...manifest, files: [manifest.files[0], { ...manifest.files[0], id: "other" }] },
+    {
+      ...manifest,
+      configRegistrations: [{
+        ...manifest.configRegistrations[0],
+        id: manifest.files[0].id,
+      }],
+    },
     { ...manifest, configRegistrations: [{ ...manifest.configRegistrations[0], installedValueSha256: "0".repeat(64) }] },
   ];
 
