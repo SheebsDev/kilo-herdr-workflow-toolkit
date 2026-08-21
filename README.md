@@ -193,3 +193,28 @@ sh ./scripts/uninstall.sh --scope project --project /path/to/project
 ```
 
 Global uninstall removes only the registration created by the installer. Project uninstall removes only unchanged files recorded by its project manifest. Neither mode deletes existing Kilo configuration or workflow history in other projects.
+
+## Validation Matrix
+
+`npm test` includes the runtime, MCP, adapter, ownership, transaction, and
+installer suites. `npm run test:installer` additionally runs the focused
+cross-platform wrapper matrix. Both commands are required by the Windows and
+Linux GitHub Actions jobs.
+
+The matrix uses temporary checkout, home, project, profile, environment, and
+private-restore roots. It covers Kilo, Claude, Codex, and `all` for user and
+project scope, repeated update, and clean uninstall. Existing installer tests
+cover malformed JSON/TOML, unsafe paths and symlinks, trust and prerequisite
+failures, conflicts and force replacement, modified content, concurrent edits,
+rollback residuals, displaced restoration, project subdirectories, and paths
+containing spaces. The tests never use a developer harness configuration or
+`.workflow` history outside their temporary fixture.
+
+### Manual Herdr Smoke Status
+
+Automated CI deliberately does not install or invoke real Claude, Codex, Kilo,
+or Herdr integrations. A real coordinator smoke run must be performed from a
+Kilo session inside Herdr and recorded with the available coordinator harnesses
+and mixed worker selections. This checkout's validation run was not inside a
+Herdr pane, so no real-harness result is claimed here; the exact limitation is
+the missing trusted Herdr session context, not a skipped protocol test.

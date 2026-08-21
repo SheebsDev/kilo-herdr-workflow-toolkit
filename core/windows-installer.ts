@@ -32,6 +32,7 @@ import type {
   InstallOperation,
   InstallSelection,
 } from "./install-plan.ts";
+import type { InstallPreflightBackend } from "./install-plan.ts";
 import { normalizeInstallHarnesses } from "./install-plan.ts";
 
 export interface WindowsInstallRequest {
@@ -44,8 +45,10 @@ export interface WindowsInstallRequest {
   readonly privateRestoreRoot?: string;
   readonly force?: boolean;
   readonly skipDependencies?: boolean;
+  readonly preflightBackend?: InstallPreflightBackend;
   readonly nodeExecutable?: string;
   readonly environmentStorePath?: string;
+  readonly environment?: Readonly<Pick<NodeJS.ProcessEnv, "KILO_CONFIG_DIR" | "XDG_CONFIG_HOME">>;
   readonly signal?: AbortSignal;
 }
 
@@ -70,6 +73,7 @@ export async function executeWindowsInstallOperation(
       homeRoot: request.homeRoot,
       force: request.force,
       skipDependencies: request.skipDependencies,
+      preflightBackend: request.preflightBackend,
       nodeExecutable: request.nodeExecutable,
       externalRegistrationBackend: external,
       signal: request.signal,
@@ -97,6 +101,7 @@ export async function executeWindowsInstallOperation(
       privateRestoreRoot,
       force: request.force,
       skipDependencies: request.skipDependencies,
+      preflightBackend: request.preflightBackend,
       signal: request.signal,
     };
     return await executeProjectScopeInstallOperation(projectRequest);
@@ -113,7 +118,8 @@ function validateKiloDiscoveryConflicts(request: WindowsInstallRequest): void {
   if (request.force) return;
 
   const checkoutRoot = path.resolve(request.checkoutRoot);
-  const processRegistration = process.env.KILO_CONFIG_DIR;
+  const environment = request.environment ?? process.env;
+  const processRegistration = environment.KILO_CONFIG_DIR;
   if (
     processRegistration &&
     !samePath(processRegistration, checkoutRoot)
@@ -128,7 +134,7 @@ function validateKiloDiscoveryConflicts(request: WindowsInstallRequest): void {
     path.join(request.homeRoot, ".kilo"),
     path.join(request.homeRoot, ".kilocode"),
   ];
-  if (process.env.XDG_CONFIG_HOME) roots.push(path.join(process.env.XDG_CONFIG_HOME, "kilo"));
+  if (environment.XDG_CONFIG_HOME) roots.push(path.join(environment.XDG_CONFIG_HOME, "kilo"));
   const conflicts = roots.flatMap((root) => {
     if (samePath(root, checkoutRoot) || !existsSync(root)) return [];
     return ["plugin", "plugins"].flatMap((directory) =>

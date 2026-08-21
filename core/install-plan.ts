@@ -413,6 +413,12 @@ export async function buildInstallPlan(
       resolveDestination(destinationRoot, normalizeDestinationPath(target.path)),
     );
   }
+  for (const target of request.insertedBlockTargets ?? []) {
+    if (!harnesses.includes(target.harness)) continue;
+    sourceDestinations.add(
+      resolveDestination(destinationRoot, normalizeDestinationPath(target.path)),
+    );
+  }
   const preconditionByPath = new Map<string, DestinationPrecondition>();
 
   if (operation === "uninstall") {

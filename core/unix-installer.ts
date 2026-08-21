@@ -33,6 +33,7 @@ export interface UnixInstallRequest {
   readonly force?: boolean;
   readonly skipDependencies?: boolean;
   readonly preflightBackend?: InstallPreflightBackend;
+  readonly environment?: Readonly<Pick<NodeJS.ProcessEnv, "KILO_CONFIG_DIR" | "XDG_CONFIG_HOME">>;
   readonly signal?: AbortSignal;
 }
 
@@ -105,7 +106,8 @@ function validateKiloDiscoveryConflicts(request: UnixInstallRequest): void {
   if (request.force) return;
 
   const checkoutRoot = path.resolve(request.checkoutRoot);
-  const registration = process.env.KILO_CONFIG_DIR;
+  const environment = request.environment ?? process.env;
+  const registration = environment.KILO_CONFIG_DIR;
   if (registration && !samePath(registration, checkoutRoot)) {
     throw new Error(
       `KILO_CONFIG_DIR already points to '${registration}'. Re-run with --force only after deciding to replace that registration.`,
@@ -117,7 +119,7 @@ function validateKiloDiscoveryConflicts(request: UnixInstallRequest): void {
     path.join(request.homeRoot, ".kilo"),
     path.join(request.homeRoot, ".kilocode"),
   ];
-  if (process.env.XDG_CONFIG_HOME) roots.push(path.join(process.env.XDG_CONFIG_HOME, "kilo"));
+  if (environment.XDG_CONFIG_HOME) roots.push(path.join(environment.XDG_CONFIG_HOME, "kilo"));
   const conflicts = roots.flatMap((root) => {
     if (samePath(root, checkoutRoot) || !existsSync(root)) return [];
     return ["plugin", "plugins"].flatMap((directory) =>

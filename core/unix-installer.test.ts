@@ -29,6 +29,7 @@ test("Unix Kilo profile installation preserves exact surrounding bytes, includin
       homeRoot: home,
       profilePath: profile,
       skipDependencies: true,
+      environment: {},
       preflightBackend: passingPreflight(),
       projectedAt: "2026-08-20T12:00:00.000Z",
     };
@@ -65,6 +66,7 @@ test("Unix uninstall retains an edited owned profile block and reports it", asyn
       homeRoot: home,
       profilePath: profile,
       skipDependencies: true,
+      environment: {},
       preflightBackend: passingPreflight(),
       projectedAt: "2026-08-20T12:00:00.000Z",
     };
