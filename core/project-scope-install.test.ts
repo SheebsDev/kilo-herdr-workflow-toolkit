@@ -517,6 +517,9 @@ async function initializeWorkerServer(
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
+  const closed = new Promise<void>((resolve) => {
+    child.once("close", () => resolve());
+  });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");
@@ -557,7 +560,9 @@ async function initializeWorkerServer(
       });
     });
   } finally {
+    child.stdin.end();
     child.kill();
+    await closed;
   }
 }
 
