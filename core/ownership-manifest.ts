@@ -28,6 +28,8 @@ export const PROJECT_TOOLKIT_ROOT =
   ".agents/toolkits/kilo-herdr-engineering-workflow" as const;
 export const PROJECT_OWNERSHIP_MANIFEST_PATH =
   `${PROJECT_TOOLKIT_ROOT}/${OWNERSHIP_MANIFEST_FILENAME}` as const;
+export const LEGACY_PROJECT_OWNERSHIP_MANIFEST_PATH =
+  ".kilo/kilo-herdr-engineering-workflow.manifest" as const;
 
 export const PAYLOAD_ARTIFACT_TYPES = [
   "shared-runtime",
@@ -96,9 +98,11 @@ export const PAYLOAD_INVENTORY = {
       { sourcePath: "command/implement-task.md", destinationPath: null },
     ],
     projectMappings: [
-      { sourcePath: "plugin/workflow.ts", destinationPath: ".kilo/plugin/workflow.ts" },
-      { sourcePath: "plugin/herdr-agent-state.js", destinationPath: ".kilo/plugin/herdr-agent-state.js" },
-      { sourcePath: "command/implement-task.md", destinationPath: ".kilo/command/implement-task.md" },
+      { sourcePath: "plugin/workflow.ts", destinationPath: `${PROJECT_TOOLKIT_ROOT}/plugin/workflow.ts` },
+      { sourcePath: "plugin/herdr-agent-state.js", destinationPath: `${PROJECT_TOOLKIT_ROOT}/plugin/herdr-agent-state.js` },
+      { sourcePath: "project/kilo/plugin/workflow.ts", destinationPath: ".kilo/plugin/workflow.ts" },
+      { sourcePath: "project/kilo/plugin/herdr-agent-state.js", destinationPath: ".kilo/plugin/herdr-agent-state.js" },
+      { sourcePath: "project/kilo/command/implement-task.md", destinationPath: ".kilo/command/implement-task.md" },
     ],
   },
   canonicalSkill: {

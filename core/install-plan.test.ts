@@ -330,6 +330,8 @@ async function createCheckoutFixture() {
   await mkdir(path.join(checkout, "mcp"), { recursive: true });
   await mkdir(path.join(checkout, "plugin"), { recursive: true });
   await mkdir(path.join(checkout, "command"), { recursive: true });
+  await mkdir(path.join(checkout, "project", "kilo", "plugin"), { recursive: true });
+  await mkdir(path.join(checkout, "project", "kilo", "command"), { recursive: true });
   await mkdir(path.join(checkout, "launcher"), { recursive: true });
   await mkdir(path.join(checkout, "skills", "implement-task"), { recursive: true });
   await mkdir(path.join(checkout, "skills", "test-verification"), { recursive: true });
@@ -342,6 +344,9 @@ async function createCheckoutFixture() {
     "plugin/workflow.ts",
     "plugin/herdr-agent-state.js",
     "command/implement-task.md",
+    "project/kilo/plugin/workflow.ts",
+    "project/kilo/plugin/herdr-agent-state.js",
+    "project/kilo/command/implement-task.md",
     "launcher/kilo.cmd",
     "skills/implement-task/SKILL.md",
     "skills/test-verification/SKILL.md",

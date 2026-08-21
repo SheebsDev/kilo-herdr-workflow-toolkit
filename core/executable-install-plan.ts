@@ -756,7 +756,11 @@ function projectDependencyChange(
 ): void {
   const index = records.findIndex((record) => record.path === change.destinationRelativePath);
   const existing = records[index];
-  if (["create", "replace"].includes(change.action)) {
+  if (change.action === "unchanged" && !existing) {
+    effects.set(change.id, { changeId: change.id, action: "not-adopted" });
+    return;
+  }
+  if (["create", "replace", "unchanged"].includes(change.action)) {
     const input = requireDependencyInput(change);
     const record: OwnedDependencyRecord = {
       id: existing?.id ?? change.id,
@@ -764,7 +768,7 @@ function projectDependencyChange(
       path: change.destinationRelativePath,
       packageManager: input.packageManager,
       packageNames: [...input.packageNames],
-      lockfilePath: input.lockfilePath,
+      lockfilePath: input.installedLockfilePath ?? input.lockfilePath,
       treeSha256: requireSha256(change.sha256, `Dependency change "${change.id}"`),
     };
     replaceAt(records, index, record);
@@ -2436,6 +2440,9 @@ function requireDependencyInput(
     throw new Error(`Dependency change "${change.id}" has invalid package policy input.`);
   }
   if (input.lockfilePath !== undefined) validateSafeRelativePath(input.lockfilePath);
+  if (input.installedLockfilePath !== undefined) {
+    validateSafeRelativePath(input.installedLockfilePath);
+  }
   return input;
 }
 

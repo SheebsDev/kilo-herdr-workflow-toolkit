@@ -33,6 +33,7 @@ import { snapshotFileSystemTree } from "./filesystem-tree.ts";
 import { getTrustedWorkerProfile, isWorkerExecutableAvailable } from "./worker-profile.ts";
 
 export const INSTALL_SELECTIONS = [...AGENT_KINDS, "all"] as const;
+export const ENGINEERING_WORKFLOW_MCP_NAME = "engineering-workflow" as const;
 export type InstallSelection = (typeof INSTALL_SELECTIONS)[number];
 export type InstallOperation = "install" | "update" | "uninstall";
 export type InstallScope = "user" | "project";
@@ -172,6 +173,7 @@ export interface PlannedOwnedChange {
     readonly packageManager: "npm";
     readonly packageNames: readonly string[];
     readonly lockfilePath?: string;
+    readonly installedLockfilePath?: string;
   };
   readonly warning?: string;
 }
@@ -244,6 +246,17 @@ export interface InstallTrustTarget {
   readonly message?: string;
 }
 
+export interface InstallDependencyTarget {
+  /** Owned dependency-tree path relative to destinationRoot. */
+  readonly path: string;
+  readonly treeSha256: string;
+  readonly packageNames: readonly string[];
+  /** Checkout-relative lockfile used to prepare the dependency tree. */
+  readonly sourceLockfilePath?: string;
+  /** Installed lockfile path recorded in durable ownership metadata. */
+  readonly installedLockfilePath?: string;
+}
+
 export interface InstallPreflightBackend {
   readonly checkHarness?: (
     harness: AgentKind,
@@ -280,6 +293,7 @@ export interface InstallPlanRequest {
   readonly existingRestoreData?: RestoreData;
   readonly configTargets?: readonly InstallConfigTarget[];
   readonly externalRegistrationTargets?: readonly InstallExternalRegistrationTarget[];
+  readonly dependencyTargets?: readonly InstallDependencyTarget[];
   readonly trustTargets?: readonly InstallTrustTarget[];
   readonly force?: boolean;
   readonly skipDependencies?: boolean;
@@ -385,6 +399,11 @@ export async function buildInstallPlan(
       .filter((entry) => entry.destinationPath !== undefined)
       .map((entry) => entry.destinationPath!),
   );
+  for (const target of request.dependencyTargets ?? []) {
+    sourceDestinations.add(
+      resolveDestination(destinationRoot, normalizeDestinationPath(target.path)),
+    );
+  }
   const preconditionByPath = new Map<string, DestinationPrecondition>();
 
   if (operation === "uninstall") {
@@ -416,6 +435,20 @@ export async function buildInstallPlan(
         warnings,
       );
     }
+
+    await planDependencyChanges(
+      request.dependencyTargets ?? [],
+      harnesses,
+      destinationRoot,
+      manifest,
+      request.force === true,
+      backend,
+      destinationPreconditions,
+      preconditionByPath,
+      ownedChanges,
+      rollbackInputs,
+      warnings,
+    );
 
     await planConfigChanges(
       request.configTargets ?? [],
@@ -856,6 +889,120 @@ async function planPayloadChange(
     sha256: entry.sha256,
     warning,
   });
+}
+
+async function planDependencyChanges(
+  targets: readonly InstallDependencyTarget[],
+  harnesses: readonly AgentKind[],
+  destinationRoot: string,
+  manifest: OwnershipManifest | undefined,
+  force: boolean,
+  backend: InstallPreflightBackend,
+  destinationPreconditions: DestinationPrecondition[],
+  preconditionByPath: Map<string, DestinationPrecondition>,
+  ownedChanges: PlannedOwnedChange[],
+  rollbackInputs: RollbackInput[],
+  warnings: InstallWarning[],
+): Promise<void> {
+  for (const target of targets) {
+    const relativePath = normalizeDestinationPath(target.path);
+    validateDependencyTarget(target);
+    const destinationPath = resolveDestination(destinationRoot, relativePath);
+    const snapshot = await readDestination(backend, destinationPath);
+    if (snapshot.exists && snapshot.kind !== "directory") {
+      throw new InstallPreflightError([
+        `Dependency destination is not a directory: ${destinationPath}.`,
+      ]);
+    }
+
+    const record = manifest?.dependencies.find(
+      (candidate) => candidate.path === relativePath,
+    );
+    const state: PlannedOwnershipState = !record
+      ? "unrelated"
+      : !snapshot.exists
+        ? "owned-missing"
+        : snapshot.treeSha256 === record.treeSha256
+          ? "owned-unchanged"
+          : "owned-modified";
+    addFilePrecondition(
+      destinationRoot,
+      relativePath,
+      snapshot,
+      state,
+      record?.treeSha256 ?? target.treeSha256,
+      manifest,
+      destinationPreconditions,
+      preconditionByPath,
+    );
+
+    let action: PlannedChangeAction;
+    let warning: string | undefined;
+    if (!snapshot.exists) action = "create";
+    else if (snapshot.treeSha256 === target.treeSha256) action = "unchanged";
+    else if (state === "owned-modified" && !force) {
+      action = "preserve";
+      warning = `Owned dependency tree was modified and will be retained: ${destinationPath}.`;
+      warnings.push({
+        code: "modified-owned-content",
+        path: destinationPath,
+        message: warning,
+      });
+    } else if (state === "unrelated") {
+      throw new InstallPreflightError([
+        `Dependency conflict at ${destinationPath}. Unrelated dependency trees cannot be safely force-replaced.`,
+      ]);
+    } else {
+      action = "replace";
+    }
+
+    if (action === "create" || action === "replace") {
+      rollbackInputs.push({
+        type: "dependency",
+        path: destinationPath,
+        existed: snapshot.exists,
+        sha256: snapshot.treeSha256,
+        entries: snapshot.entries,
+      });
+    }
+    ownedChanges.push({
+      id: `dependency-${hashText(relativePath)}`,
+      artifactType: "dependency",
+      harnesses: [...harnesses],
+      destinationPath,
+      destinationRelativePath: relativePath,
+      action,
+      sha256: target.treeSha256,
+      dependencyInput: {
+        packageManager: "npm",
+        packageNames: [...target.packageNames],
+        lockfilePath: target.sourceLockfilePath,
+        installedLockfilePath: target.installedLockfilePath,
+      },
+      warning,
+    });
+  }
+}
+
+function validateDependencyTarget(target: InstallDependencyTarget): void {
+  if (!/^[0-9a-f]{64}$/.test(target.treeSha256)) {
+    throw new Error(`Dependency target ${target.path} has an invalid tree fingerprint.`);
+  }
+  if (
+    target.packageNames.length === 0 ||
+    new Set(target.packageNames).size !== target.packageNames.length ||
+    !target.packageNames.every((name) =>
+      /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(name)
+    )
+  ) {
+    throw new Error(`Dependency target ${target.path} has invalid package names.`);
+  }
+  if (target.sourceLockfilePath !== undefined) {
+    validateSafeRelativePath(target.sourceLockfilePath);
+  }
+  if (target.installedLockfilePath !== undefined) {
+    validateSafeRelativePath(target.installedLockfilePath);
+  }
 }
 
 async function planConfigChanges(

@@ -14,17 +14,12 @@ import type {
   TransitionAdapterContext,
 } from "./executable-install-plan.ts";
 import {
-  ExternalRegistrationInstallAdapter,
-} from "./external-registration-install-adapter.ts";
-import type {
-  ExternalRegistrationBackend,
-} from "./external-registration-install-adapter.ts";
-import {
   FileSystemInstallAdapter,
 } from "./filesystem-install-adapter.ts";
 import type {
   FileSystemInstallAdapterOptions,
 } from "./filesystem-install-adapter.ts";
+import { copyFileSystemTree, snapshotFileSystemTree } from "./filesystem-tree.ts";
 import {
   ENGINEERING_WORKFLOW_MCP_NAME,
   buildInstallPlan,
@@ -36,76 +31,106 @@ import type {
   InstallPlan,
   InstallPreflightBackend,
   InstallSelection,
+  InstallTrustTarget,
 } from "./install-plan.ts";
-import {
-  executeInstallTransaction,
-} from "./install-transaction.ts";
+import { executeInstallTransaction } from "./install-transaction.ts";
 import type { InstallTransactionResult } from "./install-transaction.ts";
 import type { AgentKind, JsonValue } from "./model.ts";
 import {
+  LEGACY_PROJECT_OWNERSHIP_MANIFEST_PATH,
+  PROJECT_TOOLKIT_ROOT,
+  inspectLegacyPhase1Manifest,
   parseOwnershipManifest,
   resolveOwnershipPaths,
   validateRestoreData,
   validateSafeRelativePath,
 } from "./ownership-manifest.ts";
 import type { RestoreData } from "./ownership-manifest.ts";
+export const PROJECT_CLAUDE_CONFIG_PATH = ".mcp.json" as const;
+export const PROJECT_CODEX_CONFIG_PATH = ".codex/config.toml" as const;
+export const PROJECT_DEPENDENCY_PATH = `${PROJECT_TOOLKIT_ROOT}/node_modules` as const;
 
-export { ENGINEERING_WORKFLOW_MCP_NAME } from "./install-plan.ts";
-export const KILO_CONFIG_REGISTRATION_KEY = "KILO_CONFIG_DIR" as const;
-export const USER_CLAUDE_CONFIG_PATH = ".claude.json" as const;
-export const USER_CODEX_CONFIG_PATH = ".codex/config.toml" as const;
-export const USER_KILO_REGISTRATION_PATH =
-  ".config/kilo-herdr-engineering-workflow/external-registrations/KILO_CONFIG_DIR" as const;
+const PROJECT_MCP_ENTRYPOINT = [
+  ".agents",
+  "toolkits",
+  "kilo-herdr-engineering-workflow",
+  "mcp",
+  "server.ts",
+] as const;
 
-export interface UserScopeConfigPaths {
+const PROJECT_MCP_BOOTSTRAP = [
+  'import{existsSync}from"node:fs";',
+  'import path from"node:path";',
+  'import{pathToFileURL}from"node:url";',
+  "let directory=process.cwd();",
+  "for(;;){",
+  `const entry=path.join(directory,${PROJECT_MCP_ENTRYPOINT.map((part) => JSON.stringify(part)).join(",")});`,
+  "if(existsSync(entry)){await import(pathToFileURL(entry).href);break;}",
+  "const parent=path.dirname(directory);",
+  'if(parent===directory)throw new Error("Could not find the project engineering workflow MCP entrypoint.");',
+  "directory=parent;",
+  "}",
+].join("");
+
+export interface ProjectScopeConfigPaths {
   readonly claude?: string;
   readonly codex?: string;
 }
 
-export interface UserScopeInstallRequest {
+export interface ProjectScopeInstallRequest {
   readonly operation?: InstallOperation;
   readonly selections?: InstallSelection | readonly InstallSelection[];
   readonly checkoutRoot: string;
-  readonly homeRoot: string;
+  readonly projectRoot: string;
+  /** Private persistent storage outside the project for displaced config values. */
+  readonly privateRestoreRoot: string;
   readonly force?: boolean;
   readonly skipDependencies?: boolean;
-  readonly nodeExecutable?: string;
-  readonly configPaths?: UserScopeConfigPaths;
+  readonly configPaths?: ProjectScopeConfigPaths;
+  readonly trustTargets?: readonly InstallTrustTarget[];
   readonly preflightBackend?: InstallPreflightBackend;
-  readonly externalRegistrationBackend?: ExternalRegistrationBackend;
   readonly filesystemOptions?: FileSystemInstallAdapterOptions;
   readonly projectedAt?: string;
   readonly signal?: AbortSignal;
 }
 
-export interface UserScopeExecutablePlan {
+export interface ProjectScopeExecutablePlan {
   readonly preflightPlan: InstallPlan;
   readonly executablePlan: ExecutableInstallPlan;
 }
 
-export interface UserScopeInstallResult extends UserScopeExecutablePlan {
+export interface ProjectScopeInstallResult extends ProjectScopeExecutablePlan {
   readonly transaction: InstallTransactionResult;
 }
 
-/** Builds a complete user-scope transaction without mutating user state. */
-export async function buildUserScopeExecutablePlan(
-  request: UserScopeInstallRequest,
-): Promise<UserScopeExecutablePlan> {
+/** Builds a portable project transaction without mutating project content. */
+export async function buildProjectScopeExecutablePlan(
+  request: ProjectScopeInstallRequest,
+): Promise<ProjectScopeExecutablePlan> {
   const operation = request.operation ?? "install";
   const checkoutRoot = canonicalDirectory(request.checkoutRoot, "Checkout root");
-  const homeRoot = canonicalDirectory(request.homeRoot, "User home root");
+  const projectRoot = canonicalDirectory(request.projectRoot, "Project root");
+  const privateRestoreRoot = canonicalDirectory(
+    request.privateRestoreRoot,
+    "Private restore-data root",
+  );
   const harnesses = normalizeInstallHarnesses(request.selections);
   const signal = request.signal ?? new AbortController().signal;
   throwIfAborted(signal);
+  refuseLegacyProjectOwnership(projectRoot);
 
-  const ownershipPaths = resolveOwnershipPaths("user", homeRoot);
+  const ownershipPaths = resolveOwnershipPaths(
+    "project",
+    projectRoot,
+    privateRestoreRoot,
+  );
   const manifestSnapshot = readMetadataSnapshot(
-    homeRoot,
+    projectRoot,
     ownershipPaths.manifestPath,
-    (source) => parseOwnershipManifest(source, { root: homeRoot }),
+    (source) => parseOwnershipManifest(source, { root: projectRoot }),
   );
   const restoreDataSnapshot = readMetadataSnapshot(
-    homeRoot,
+    privateRestoreRoot,
     ownershipPaths.restoreDataPath,
     parseRestoreData,
     true,
@@ -113,51 +138,37 @@ export async function buildUserScopeExecutablePlan(
   const manifest = manifestSnapshot.value;
   const restoreData = restoreDataSnapshot.value;
   if (restoreData && !manifest) {
-    throw new Error(`Private restore data exists without an ownership manifest: ${ownershipPaths.restoreDataPath}`);
-  }
-
-  const externalRegistrationTargets = harnesses.includes("kilo")
-    ? [{
-        harness: "kilo" as const,
-        path: USER_KILO_REGISTRATION_PATH,
-        key: KILO_CONFIG_REGISTRATION_KEY,
-        installedValue: checkoutRoot,
-      }]
-    : [];
-  if (externalRegistrationTargets.length > 0 && operation !== "uninstall" && !request.externalRegistrationBackend) {
     throw new Error(
-      "Kilo user installation requires an injected external-registration backend; platform environment/profile mutation is not performed by core.",
+      `Private restore data exists without an ownership manifest: ${ownershipPaths.restoreDataPath}`,
     );
   }
 
-  const configTargets = buildConfigTargets(
-    harnesses,
-    checkoutRoot,
-    request.nodeExecutable ?? process.execPath,
-    request.configPaths,
-  );
-  const backend: InstallPreflightBackend = {
-    ...request.preflightBackend,
-    readExternalRegistration: request.externalRegistrationBackend
-      ? async (target) => {
-          const value = await request.externalRegistrationBackend!.read(target.key, signal);
-          return value === undefined ? { exists: false } : { exists: true, value };
-        }
-      : request.preflightBackend?.readExternalRegistration,
-  };
+  const dependencyTargets = operation === "uninstall"
+    ? []
+    : [{
+        path: PROJECT_DEPENDENCY_PATH,
+        treeSha256: snapshotFileSystemTree(
+          path.join(checkoutRoot, "node_modules"),
+          { allowInternalLinks: true },
+        ).sha256,
+        packageNames: readRuntimePackageNames(checkoutRoot),
+        sourceLockfilePath: "package-lock.json",
+        installedLockfilePath: `${PROJECT_TOOLKIT_ROOT}/package-lock.json`,
+      }];
   const preflightPlan = await buildInstallPlan({
     operation,
-    scope: "user",
+    scope: "project",
     selections: request.selections,
     checkoutRoot,
-    destinationRoot: homeRoot,
+    destinationRoot: projectRoot,
     existingManifest: manifest,
     existingRestoreData: restoreData,
-    configTargets,
-    externalRegistrationTargets,
+    configTargets: buildConfigTargets(harnesses, request.configPaths),
+    dependencyTargets,
+    trustTargets: request.trustTargets,
     force: request.force,
     skipDependencies: request.skipDependencies,
-    backend,
+    backend: request.preflightBackend,
   });
   throwIfAborted(signal);
 
@@ -174,17 +185,23 @@ export async function buildUserScopeExecutablePlan(
   return { preflightPlan, executablePlan };
 }
 
-/** Executes one transaction with filesystem, config, and injected external adapters. */
-export async function executeUserScopeInstallOperation(
-  request: UserScopeInstallRequest,
-): Promise<UserScopeInstallResult> {
-  const plans = await buildUserScopeExecutablePlan(request);
-  const filesystem = new FileSystemInstallAdapter(request.filesystemOptions);
+/** Executes one project transaction through the shared filesystem/config adapters. */
+export async function executeProjectScopeInstallOperation(
+  request: ProjectScopeInstallRequest,
+): Promise<ProjectScopeInstallResult> {
+  const plans = await buildProjectScopeExecutablePlan(request);
+  const dependencySource = path.join(plans.preflightPlan.checkoutRoot, "node_modules");
+  const filesystem = new FileSystemInstallAdapter({
+    ...request.filesystemOptions,
+    prepareDependencyTree: request.filesystemOptions?.prepareDependencyTree ??
+      (async ({ outputPath }) => {
+        copyFileSystemTree(dependencySource, outputPath, {
+          allowInternalLinks: true,
+        });
+      }),
+  });
   const claude = new ClaudeJsonInstallAdapter();
   const codex = new CodexTomlInstallAdapter();
-  const external = request.externalRegistrationBackend
-    ? new ExternalRegistrationInstallAdapter(request.externalRegistrationBackend)
-    : undefined;
   const transaction = await executeInstallTransaction({
     plan: plans.executablePlan,
     signal: request.signal,
@@ -192,27 +209,21 @@ export async function executeUserScopeInstallOperation(
       filesystem,
       claude,
       codex,
-      external,
     }),
   });
   return { ...plans, transaction };
 }
 
-export function buildUserMcpRegistration(
+export function buildProjectMcpRegistration(
   harness: "claude" | "codex",
-  checkoutRoot: string,
-  nodeExecutable = process.execPath,
 ): JsonValue {
-  const canonicalCheckout = path.resolve(checkoutRoot);
-  const canonicalNode = path.resolve(nodeExecutable);
-  if (!path.isAbsolute(nodeExecutable) || canonicalNode !== nodeExecutable) {
-    throw new Error("The user-scope MCP Node executable must be a normalized absolute path.");
-  }
   return {
-    command: canonicalNode,
+    command: "node",
     args: [
       "--experimental-strip-types",
-      path.join(canonicalCheckout, "mcp", "server.ts"),
+      "--input-type=module",
+      "--eval",
+      PROJECT_MCP_BOOTSTRAP,
     ],
     env: { WORKFLOW_COORDINATOR_KIND: harness },
   };
@@ -220,30 +231,61 @@ export function buildUserMcpRegistration(
 
 function buildConfigTargets(
   harnesses: readonly AgentKind[],
-  checkoutRoot: string,
-  nodeExecutable: string,
-  paths: UserScopeConfigPaths | undefined,
+  paths: ProjectScopeConfigPaths | undefined,
 ): InstallConfigTarget[] {
   const targets: InstallConfigTarget[] = [];
   if (harnesses.includes("claude")) {
     targets.push({
       harness: "claude",
-      path: normalizeRelativePath(paths?.claude ?? USER_CLAUDE_CONFIG_PATH),
+      path: normalizeRelativePath(paths?.claude ?? PROJECT_CLAUDE_CONFIG_PATH),
       key: `mcpServers.${ENGINEERING_WORKFLOW_MCP_NAME}`,
       format: "json",
-      installedValue: buildUserMcpRegistration("claude", checkoutRoot, nodeExecutable),
+      installedValue: buildProjectMcpRegistration("claude"),
     });
   }
   if (harnesses.includes("codex")) {
     targets.push({
       harness: "codex",
-      path: normalizeRelativePath(paths?.codex ?? USER_CODEX_CONFIG_PATH),
+      path: normalizeRelativePath(paths?.codex ?? PROJECT_CODEX_CONFIG_PATH),
       key: `mcp_servers.${ENGINEERING_WORKFLOW_MCP_NAME}`,
       format: "toml",
-      installedValue: buildUserMcpRegistration("codex", checkoutRoot, nodeExecutable),
+      installedValue: buildProjectMcpRegistration("codex"),
     });
   }
   return targets;
+}
+
+function refuseLegacyProjectOwnership(projectRoot: string): void {
+  const legacyPath = path.join(
+    projectRoot,
+    ...LEGACY_PROJECT_OWNERSHIP_MANIFEST_PATH.split("/"),
+  );
+  if (!existsSync(legacyPath)) return;
+  const inspection = inspectLegacyPhase1Manifest(readFileSync(legacyPath, "utf8"));
+  throw new Error(`${inspection.reason} Legacy manifest retained at ${legacyPath}.`);
+}
+
+function readRuntimePackageNames(checkoutRoot: string): string[] {
+  const packagePath = path.join(checkoutRoot, "package.json");
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(packagePath, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Runtime package metadata is not valid JSON: ${errorMessage(error)}`,
+    );
+  }
+  if (!isRecord(value) || !isRecord(value.dependencies)) {
+    throw new Error("Runtime package metadata must declare dependencies.");
+  }
+  const names = Object.keys(value.dependencies).sort();
+  if (
+    names.length === 0 ||
+    !Object.values(value.dependencies).every((version) => typeof version === "string")
+  ) {
+    throw new Error("Runtime package dependencies are invalid.");
+  }
+  return names;
 }
 
 interface MetadataSnapshot<T> {
@@ -273,14 +315,17 @@ function readMetadataSnapshot<T>(
   if (before.isSymbolicLink() || !before.isFile()) {
     throw new Error(`Ownership metadata is not a physical file: ${filePath}`);
   }
-  if (requirePrivatePermissions && process.platform !== "win32" && (before.mode & 0o077) !== 0) {
+  if (
+    requirePrivatePermissions && process.platform !== "win32" &&
+    (before.mode & 0o077) !== 0
+  ) {
     throw new Error(`Restore data permissions are too broad: ${filePath}`);
   }
   const source = readFileSync(filePath);
   const after = lstatSync(filePath);
   if (
-    before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
-    before.mtimeMs !== after.mtimeMs
+    before.dev !== after.dev || before.ino !== after.ino ||
+    before.size !== after.size || before.mtimeMs !== after.mtimeMs
   ) {
     throw new Error(`Ownership metadata changed while it was being read: ${filePath}`);
   }
@@ -298,15 +343,11 @@ function readMetadataSnapshot<T>(
 }
 
 function parseRestoreData(source: string): RestoreData {
-  let value: unknown;
   try {
-    value = JSON.parse(source) as unknown;
+    return validateRestoreData(JSON.parse(source) as unknown);
   } catch (error) {
-    throw new Error(
-      `Restore data is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    throw new Error(`Restore data is not valid JSON: ${errorMessage(error)}`);
   }
-  return validateRestoreData(value);
 }
 
 function missingParentTargets(root: string, relativeFilePath: string): ResourceTarget[] {
@@ -335,20 +376,16 @@ function resolveAdapter(
     filesystem: FileSystemInstallAdapter;
     claude: ClaudeJsonInstallAdapter;
     codex: CodexTomlInstallAdapter;
-    external?: ExternalRegistrationInstallAdapter;
   },
 ) {
   if (context.transition.kind === "external-registration") {
-    if (!adapters.external) {
-      throw new Error("The executable plan requires an external-registration backend.");
-    }
-    return adapters.external;
+    throw new Error("Project installation does not support external registrations.");
   }
   if (context.transition.kind === "opaque-registration") {
     if (context.transition.stage.adapterKind === "claude-json") return adapters.claude;
     if (context.transition.stage.adapterKind === "codex-toml") return adapters.codex;
     throw new Error(
-      `User-scope composition has no adapter for ${context.transition.stage.adapterKind}.`,
+      `Project-scope composition has no adapter for ${context.transition.stage.adapterKind}.`,
     );
   }
   return adapters.filesystem;
@@ -376,6 +413,14 @@ function relativePathWithin(root: string, filePath: string): string {
   const relative = path.relative(root, filePath).split(path.sep).join("/");
   validateSafeRelativePath(relative, root);
   return relative;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function throwIfAborted(signal: AbortSignal): void {
