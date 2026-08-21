@@ -20,6 +20,7 @@ import {
 import type {
   ConfigRegistrationRecord,
   DisplacedValueRecord,
+  ExternalRegistrationRecord,
   InsertedBlockRecord,
   OwnedDependencyRecord,
   OwnedDirectoryRecord,
@@ -47,7 +48,11 @@ export type ExactResourceState =
   | { readonly type: "file"; readonly sha256: string }
   | { readonly type: "directory" }
   | { readonly type: "directory-tree"; readonly sha256: string }
-  | { readonly type: "dependency-tree"; readonly sha256: string };
+  | { readonly type: "dependency-tree"; readonly sha256: string }
+  | {
+      readonly type: "external-registration";
+      readonly valueSha256?: string;
+    };
 
 export interface OpaqueSemanticPostimage {
   readonly semanticId: string;
@@ -165,6 +170,26 @@ export interface OpaqueRegistrationTransition extends TransitionBase {
   };
 }
 
+export interface ExternalRegistrationTransition extends TransitionBase {
+  readonly kind: "external-registration";
+  readonly baseline: {
+    readonly type: "external-registration";
+    readonly valueSha256?: string;
+  };
+  readonly desired: {
+    readonly type: "external-registration";
+    readonly valueSha256?: string;
+  };
+  readonly stage: {
+    readonly type: "external-registration";
+    readonly harness: AgentKind;
+    readonly key: string;
+    readonly action: "set" | "remove" | "restore";
+    readonly desiredValue?: string;
+    readonly expectedValueSha256?: string;
+  };
+}
+
 export interface OwnershipManifestTransition extends TransitionBase {
   readonly kind: "ownership-manifest";
   readonly baseline:
@@ -200,6 +225,7 @@ export type InstallTransition =
   | DirectoryTreeTransition
   | DependencyTreeTransition
   | OpaqueRegistrationTransition
+  | ExternalRegistrationTransition
   | OwnershipManifestTransition
   | RestoreDataTransition;
 
@@ -489,6 +515,7 @@ function projectOwnership(
   const directories = baseline?.directories ?? [];
   const dependencies = baseline?.dependencies ?? [];
   const registrations = baseline?.configRegistrations ?? [];
+  const externalRegistrations = baseline?.externalRegistrations ?? [];
   const blocks = baseline?.insertedBlocks ?? [];
   const displaced = baseline?.displacedValues ?? [];
   const residuals = baseline?.residualOwnership ?? [];
@@ -549,6 +576,20 @@ function projectOwnership(
       );
       continue;
     }
+    if (change.artifactType === "external-registration") {
+      projectExternalRegistrationChange(
+        change,
+        precondition,
+        preflight,
+        externalRegistrations,
+        displaced,
+        residuals,
+        restoreEntries,
+        effects,
+        projectedAt,
+      );
+      continue;
+    }
     projectBlockChange(
       change,
       precondition,
@@ -568,12 +609,14 @@ function projectOwnership(
   sortRecords(directories);
   sortRecords(dependencies);
   sortRecords(registrations);
+  sortRecords(externalRegistrations);
   sortRecords(blocks);
   sortRecords(displaced);
   sortRecords(residuals);
 
   const hasState =
     files.length + directories.length + dependencies.length + registrations.length +
+      externalRegistrations.length +
       blocks.length + displaced.length + residuals.length >
     0;
   if (!hasState) return { manifest: null, restoreData: null, effects };
@@ -582,7 +625,7 @@ function projectOwnership(
   for (const record of [...files, ...directories, ...dependencies]) {
     for (const harness of record.harnesses) recordHarnesses.add(harness);
   }
-  for (const record of [...registrations, ...blocks, ...displaced]) {
+  for (const record of [...registrations, ...externalRegistrations, ...blocks, ...displaced]) {
     recordHarnesses.add(record.harness);
   }
   if (recordHarnesses.size === 0) {
@@ -604,6 +647,7 @@ function projectOwnership(
     directories,
     dependencies,
     configRegistrations: registrations,
+    externalRegistrations,
     insertedBlocks: blocks,
     displacedValues: displaced,
     residualOwnership: residuals,
@@ -828,6 +872,102 @@ function projectRegistrationChange(
       residuals,
       existing.id,
       "config-registration",
+      existing.path,
+      change.preservationReason === "missing-restore-data" ? "missing-restore-data" : "modified",
+      change.sha256,
+      precondition.sha256,
+      projectedAt,
+    );
+    effects.set(change.id, { changeId: change.id, action: "residual", recordId: existing.id });
+  } else {
+    effects.set(change.id, { changeId: change.id, action: "detach", recordId: existing.id });
+  }
+}
+
+function projectExternalRegistrationChange(
+  change: PlannedOwnedChange,
+  precondition: DestinationPrecondition,
+  preflight: InstallPlan,
+  records: ExternalRegistrationRecord[],
+  displaced: DisplacedValueRecord[],
+  residuals: ResidualOwnershipRecord[],
+  restoreEntries: Record<string, JsonValue>,
+  effects: Map<string, OwnershipEffect>,
+  projectedAt: string,
+): void {
+  const key = requireSemanticKey(change);
+  const harness = requireSingleHarness(change);
+  const index = records.findIndex(
+    (record) => record.path === change.destinationRelativePath && record.key === key,
+  );
+  const existing = records[index];
+  const displacedIndex = displaced.findIndex(
+    (record) => record.path === change.destinationRelativePath && record.key === key,
+  );
+  const existingDisplaced = displaced[displacedIndex];
+  if (change.action === "unchanged" && !existing) {
+    effects.set(change.id, { changeId: change.id, action: "not-adopted" });
+    return;
+  }
+  if (change.action === "create" || change.action === "replace") {
+    if (typeof change.desiredValue !== "string") {
+      throw new Error(`External registration change "${change.id}" has no text value.`);
+    }
+    const installedValueSha256 = hashOwnedValue(change.desiredValue);
+    const record: ExternalRegistrationRecord = {
+      id: existing?.id ?? change.id,
+      harness,
+      path: change.destinationRelativePath,
+      key,
+      installedValue: change.desiredValue,
+      installedValueSha256,
+    };
+    replaceAt(records, index, record);
+    if (change.action === "replace" && !existing && change.ownershipState === "unrelated") {
+      const prior = findExternalRegistrationRollback(preflight.rollbackInputs, change, key);
+      if (prior?.value === undefined) {
+        throw new Error(`Forced external registration "${change.id}" has no exact displaced value.`);
+      }
+      const restoreDataId = `${change.id}-restore`;
+      const displacedRecord: DisplacedValueRecord = {
+        id: `${change.id}-displaced`,
+        harness,
+        path: change.destinationRelativePath,
+        key,
+        restoreDataId,
+        originalValueSha256: hashOwnedValue(prior.value),
+        installedValueSha256,
+        valueKind: "text",
+        secret: false,
+      };
+      replaceAt(displaced, displacedIndex, displacedRecord);
+      restoreEntries[restoreDataId] = prior.value;
+    } else if (existingDisplaced) {
+      displaced[displacedIndex] = { ...existingDisplaced, installedValueSha256 };
+    }
+    effects.set(change.id, { changeId: change.id, action: "upsert", recordId: record.id });
+    return;
+  }
+  if (change.action === "restore" || change.action === "remove") {
+    if (index >= 0) records.splice(index, 1);
+    removeDisplacedAt(displaced, displacedIndex, restoreEntries);
+    effects.set(change.id, { changeId: change.id, action: "detach", recordId: existing?.id });
+    return;
+  }
+  if (preflight.operation !== "uninstall" || !existing) {
+    effects.set(change.id, { changeId: change.id, action: "retain", recordId: existing?.id });
+    return;
+  }
+  records.splice(index, 1);
+  removeDisplacedAt(displaced, displacedIndex, restoreEntries);
+  if (
+    precondition.exists &&
+    (change.ownershipState === "owned-modified" || change.preservationReason === "missing-restore-data")
+  ) {
+    upsertResidual(
+      residuals,
+      existing.id,
+      "external-registration",
       existing.path,
       change.preservationReason === "missing-restore-data" ? "missing-restore-data" : "modified",
       change.sha256,
@@ -1160,6 +1300,53 @@ function compilePhysicalTransitions(
     } as Omit<OpaqueRegistrationTransition, "order">);
   }
 
+  for (const change of mutating
+    .filter((candidate) => candidate.artifactType === "external-registration")
+    .sort((left, right) => left.destinationRelativePath.localeCompare(right.destinationRelativePath))) {
+    const key = requireSemanticKey(change);
+    const rollback = findExternalRegistrationRollback(preflight.rollbackInputs, change, key);
+    if (!rollback) {
+      throw new Error(`External registration change "${change.id}" has no exact rollback input.`);
+    }
+    const target = targetWithin(preflight.destinationRoot, change.destinationRelativePath);
+    const precondition = findPrecondition(preflight, change);
+    const baseline = externalRegistrationState(precondition, change.id);
+    const action = change.action === "create" || change.action === "replace"
+      ? "set" as const
+      : change.action === "restore"
+        ? "restore" as const
+        : "remove" as const;
+    const desiredValue = action === "remove"
+      ? undefined
+      : requireExternalRegistrationValue(change);
+    const desired = {
+      type: "external-registration" as const,
+      valueSha256: desiredValue === undefined ? undefined : hashOwnedValue(desiredValue),
+    };
+    drafts.push({
+      id: transitionId("external-registration", target),
+      kind: "external-registration",
+      target,
+      baseline,
+      desired,
+      mutates: !resourceStatesEqual(baseline, desired),
+      dependsOn: parentDependencies(target, drafts),
+      logicalChangeIds: [change.id],
+      ownershipEffects: effectsFor([change], projection.effects),
+      rollbackGuard: { type: "exact-postimage" },
+      stage: {
+        type: "external-registration",
+        harness: requireSingleHarness(change),
+        key,
+        action,
+        desiredValue,
+        expectedValueSha256: rollback.value === undefined
+          ? undefined
+          : hashOwnedValue(rollback.value),
+      },
+    } as Omit<ExternalRegistrationTransition, "order">);
+  }
+
   const physicalIds = drafts.filter((draft) => draft.mutates).map((draft) => draft.id);
   const restoreTarget = normalizeTarget(ownership.restoreDataResource.target);
   const restoreDesired = projection.restoreData
@@ -1334,6 +1521,46 @@ function validateTransitionVariant(
     assertEffectActions(
       transition,
       transition.desired.type === "absent" ? "detach" : "upsert",
+    );
+    return;
+  }
+  if (transition.kind === "external-registration") {
+    if (
+      transition.baseline.type !== "external-registration" ||
+      transition.desired.type !== "external-registration" ||
+      transition.stage.type !== "external-registration"
+    ) {
+      throw new Error(`External registration transition "${transition.id}" has an invalid state.`);
+    }
+    if (
+      !isAgentKind(transition.stage.harness) ||
+      !transition.stage.key || /[\u0000-\u001f\u007f]/.test(transition.stage.key) ||
+      !["set", "remove", "restore"].includes(transition.stage.action)
+    ) {
+      throw new Error(`External registration transition "${transition.id}" has invalid adapter input.`);
+    }
+    const desiredHash = transition.stage.desiredValue === undefined
+      ? undefined
+      : hashOwnedValue(transition.stage.desiredValue);
+    if (
+      transition.stage.expectedValueSha256 !== transition.baseline.valueSha256 ||
+      desiredHash !== transition.desired.valueSha256 ||
+      (transition.stage.action === "remove") !== (transition.stage.desiredValue === undefined)
+    ) {
+      throw new Error(`External registration transition "${transition.id}" does not match its staged values.`);
+    }
+    if (transition.mutates === resourceStatesEqual(transition.baseline, transition.desired)) {
+      throw new Error(`External registration transition "${transition.id}" has an inconsistent mutation flag.`);
+    }
+    if (
+      transition.logicalChangeIds.length !== 1 ||
+      transition.rollbackGuard.type !== "exact-postimage"
+    ) {
+      throw new Error(`External registration transition "${transition.id}" has an invalid ownership contract.`);
+    }
+    assertEffectActions(
+      transition,
+      transition.stage.action === "set" ? "upsert" : "detach",
     );
     return;
   }
@@ -1536,6 +1763,7 @@ function validateInstallWarning(value: unknown): void {
       "conflict-forced",
       "shared-content-retained",
       "missing-owned-content",
+      "checkout-moved",
       "trust-required",
     ].includes(String(value.code)) || typeof value.message !== "string" || !value.message
   ) {
@@ -1557,7 +1785,7 @@ function validateOwnershipEffectProjection(
   const records = new Map<
     string,
     {
-      type: "file" | "directory" | "dependency" | "opaque";
+      type: "file" | "directory" | "dependency" | "opaque" | "external";
       path: string;
       sha256: string;
       key?: string;
@@ -1584,6 +1812,15 @@ function validateOwnershipEffectProjection(
   for (const record of manifest?.configRegistrations ?? []) {
     records.set(record.id, {
       type: "opaque",
+      path: record.path,
+      sha256: record.installedValueSha256,
+      key: record.key,
+      harness: record.harness,
+    });
+  }
+  for (const record of manifest?.externalRegistrations ?? []) {
+    records.set(record.id, {
+      type: "external",
       path: record.path,
       sha256: record.installedValueSha256,
       key: record.key,
@@ -1649,7 +1886,8 @@ function validateOwnershipEffectProjection(
         effect.action === "upsert" &&
         ((transition.kind === "file" && record.type !== "file") ||
           (transition.kind === "dependency-tree" && record.type !== "dependency") ||
-          (transition.kind === "opaque-registration" && record.type !== "opaque"))
+          (transition.kind === "opaque-registration" && record.type !== "opaque") ||
+          (transition.kind === "external-registration" && record.type !== "external"))
       ) {
         throw new Error(`Ownership effect "${effect.changeId}" has an incompatible record type.`);
       }
@@ -1675,6 +1913,16 @@ function validateOwnershipEffectProjection(
           record.key !== semantic.key || record.harness !== semantic.harness
         ) {
           throw new Error(`Ownership effect "${effect.changeId}" does not match the opaque postimage.`);
+        }
+      }
+      if (effect.action === "upsert" && transition.kind === "external-registration") {
+        if (
+          transition.desired.valueSha256 === undefined ||
+          record.sha256 !== transition.desired.valueSha256 ||
+          record.key !== transition.stage.key ||
+          record.harness !== transition.stage.harness
+        ) {
+          throw new Error(`Ownership effect "${effect.changeId}" does not match the external registration postimage.`);
         }
       }
     }
@@ -1789,7 +2037,8 @@ function assertPlannedChange(change: PlannedOwnedChange, preflight: InstallPlan)
     throw new Error(`Change "${change.id}" names an unselected harness.`);
   }
   if (
-    change.artifactType === "config-registration" &&
+    (change.artifactType === "config-registration" ||
+      change.artifactType === "external-registration") &&
     !["unrelated", "owned-missing", "owned-unchanged", "owned-modified"].includes(
       String(change.ownershipState),
     )
@@ -1827,6 +2076,18 @@ function findConfigRollback(
   );
 }
 
+function findExternalRegistrationRollback(
+  rollbackInputs: readonly RollbackInput[],
+  change: PlannedOwnedChange,
+  key: string,
+): Extract<RollbackInput, { type: "external-registration" }> | undefined {
+  return rollbackInputs.find(
+    (input): input is Extract<RollbackInput, { type: "external-registration" }> =>
+      input.type === "external-registration" &&
+      sameNativePath(input.path, change.destinationPath) && input.key === key,
+  );
+}
+
 function fileBaseline(
   precondition: DestinationPrecondition,
   changeId: string,
@@ -1849,6 +2110,17 @@ function dependencyBaseline(
   return { type: "dependency-tree", sha256: precondition.treeSha256 };
 }
 
+function externalRegistrationState(
+  precondition: DestinationPrecondition,
+  changeId: string,
+): ExternalRegistrationTransition["baseline"] {
+  if (!precondition.exists) return { type: "external-registration" };
+  if (!precondition.sha256) {
+    throw new Error(`External registration change "${changeId}" has no exact baseline hash.`);
+  }
+  return { type: "external-registration", valueSha256: precondition.sha256 };
+}
+
 function assertNoRetainedProjectionUnder(
   relativePath: string,
   manifest: OwnershipManifest | null,
@@ -1859,6 +2131,7 @@ function assertNoRetainedProjectionUnder(
     ...manifest.directories,
     ...manifest.dependencies,
     ...manifest.configRegistrations,
+    ...manifest.externalRegistrations,
     ...manifest.insertedBlocks,
     ...manifest.displacedValues,
     ...manifest.residualOwnership,
@@ -1964,11 +2237,14 @@ function validateTarget(value: unknown, resourceRoots: readonly string[] | undef
 }
 
 function validateExactState(value: unknown, label: string): void {
-  if (!isRecord(value) || !["absent", "file", "directory", "directory-tree", "dependency-tree"].includes(String(value.type))) {
+  if (!isRecord(value) || !["absent", "file", "directory", "directory-tree", "dependency-tree", "external-registration"].includes(String(value.type))) {
     throw new Error(`Resource ${label} has an invalid type.`);
   }
   if (["file", "directory-tree", "dependency-tree"].includes(String(value.type))) {
     assertSha256(value.sha256, `Resource ${label}`);
+  }
+  if (value.type === "external-registration" && value.valueSha256 !== undefined) {
+    assertSha256(value.valueSha256, `Resource ${label}`);
   }
 }
 
@@ -2135,6 +2411,13 @@ function requireSemanticKey(change: PlannedOwnedChange): string {
 function requireAdapterKind(change: PlannedOwnedChange): OpaqueResourcePostimage["adapterKind"] {
   if (!change.adapterKind) throw new Error(`Logical change "${change.id}" has no adapter kind.`);
   return change.adapterKind;
+}
+
+function requireExternalRegistrationValue(change: PlannedOwnedChange): string {
+  if (typeof change.desiredValue !== "string") {
+    throw new Error(`External registration change "${change.id}" has no text value.`);
+  }
+  return change.desiredValue;
 }
 
 function requireDependencyInput(
@@ -2325,6 +2608,7 @@ function isTransitionKind(value: unknown): value is InstallTransition["kind"] {
     "directory-tree",
     "dependency-tree",
     "opaque-registration",
+    "external-registration",
     "ownership-manifest",
     "restore-data",
   ].includes(String(value));

@@ -26,6 +26,8 @@ const SHARED_MODULES = [
   "filesystem-install-adapter.ts",
   "claude-json-install-adapter.ts",
   "codex-toml-install-adapter.ts",
+  "external-registration-install-adapter.ts",
+  "user-scope-install.ts",
 ] as const;
 
 test("host-neutral workflow modules load without Kilo plugin imports", async () => {

@@ -7,6 +7,7 @@ import {
   readdirSync,
 } from "node:fs";
 import * as path from "node:path";
+import { parse as parseToml } from "toml";
 
 import {
   PAYLOAD_INVENTORY,
@@ -112,6 +113,14 @@ export interface ConfigRollbackInput {
   readonly content?: string;
 }
 
+export interface ExternalRegistrationRollbackInput {
+  readonly type: "external-registration";
+  readonly path: string;
+  readonly key: string;
+  readonly existed: boolean;
+  readonly value?: string;
+}
+
 export interface DirectoryRollbackInput {
   readonly type: "directory" | "dependency" | "inserted-block";
   readonly path: string;
@@ -124,6 +133,7 @@ export interface DirectoryRollbackInput {
 export type RollbackInput =
   | FileRollbackInput
   | ConfigRollbackInput
+  | ExternalRegistrationRollbackInput
   | DirectoryRollbackInput;
 
 export type PlannedChangeAction =
@@ -141,6 +151,7 @@ export interface PlannedOwnedChange {
     | "directory"
     | "dependency"
     | "config-registration"
+    | "external-registration"
     | "inserted-block";
   readonly harnesses: readonly AgentKind[];
   readonly sourcePath?: string;
@@ -171,6 +182,7 @@ export interface InstallWarning {
     | "conflict-forced"
     | "shared-content-retained"
     | "missing-owned-content"
+    | "checkout-moved"
     | "trust-required";
   readonly path?: string;
   readonly message: string;
@@ -199,6 +211,19 @@ export interface InstallConfigTarget {
   readonly format: "json" | "toml";
   readonly installedValue: JsonValue;
   readonly trustRequired?: boolean;
+}
+
+export interface InstallExternalRegistrationTarget {
+  readonly harness: AgentKind;
+  /** Logical resource path relative to destinationRoot; no file is created here. */
+  readonly path: string;
+  readonly key: string;
+  readonly installedValue: string;
+}
+
+export interface InstallExternalRegistrationSnapshot {
+  readonly exists: boolean;
+  readonly value?: string;
 }
 
 export interface InstallConfigSnapshot {
@@ -237,6 +262,9 @@ export interface InstallPreflightBackend {
     target: InstallConfigTarget,
     absolutePath: string,
   ) => InstallConfigSnapshot | Promise<InstallConfigSnapshot>;
+  readonly readExternalRegistration?: (
+    target: InstallExternalRegistrationTarget,
+  ) => InstallExternalRegistrationSnapshot | Promise<InstallExternalRegistrationSnapshot>;
   readonly readTrust?: (
     target: InstallTrustTarget,
   ) => boolean | Promise<boolean>;
@@ -251,6 +279,7 @@ export interface InstallPlanRequest {
   readonly existingManifest?: OwnershipManifest;
   readonly existingRestoreData?: RestoreData;
   readonly configTargets?: readonly InstallConfigTarget[];
+  readonly externalRegistrationTargets?: readonly InstallExternalRegistrationTarget[];
   readonly trustTargets?: readonly InstallTrustTarget[];
   readonly force?: boolean;
   readonly skipDependencies?: boolean;
@@ -402,6 +431,20 @@ export async function buildInstallPlan(
       warnings,
     );
 
+    await planExternalRegistrationChanges(
+      request.externalRegistrationTargets ?? [],
+      harnesses,
+      destinationRoot,
+      manifest,
+      request.force === true,
+      backend,
+      destinationPreconditions,
+      preconditionByPath,
+      ownedChanges,
+      rollbackInputs,
+      warnings,
+    );
+
     if (operation === "update" && manifest) {
       await planStaleOwnedFiles(
         manifest,
@@ -466,19 +509,21 @@ async function preflightPrerequisites(
   backend: InstallPreflightBackend,
   failures: string[],
 ): Promise<void> {
-  for (const harness of harnesses) {
-    try {
-      const available = backend.checkHarness
-        ? await backend.checkHarness(harness)
-        : await isWorkerExecutableAvailable(harness);
-      if (available === false) {
-        const profile = getTrustedWorkerProfile(harness);
-        failures.push(
-          `${harness} CLI "${profile.executable}" is unavailable. ${profile.installCommand}`,
-        );
+  if (request.operation !== "uninstall") {
+    for (const harness of harnesses) {
+      try {
+        const available = backend.checkHarness
+          ? await backend.checkHarness(harness)
+          : await isWorkerExecutableAvailable(harness);
+        if (available === false) {
+          const profile = getTrustedWorkerProfile(harness);
+          failures.push(
+            `${harness} CLI "${profile.executable}" is unavailable. ${profile.installCommand}`,
+          );
+        }
+      } catch (error) {
+        failures.push(`${harness} CLI preflight failed: ${errorMessage(error)}`);
       }
-    } catch (error) {
-      failures.push(`${harness} CLI preflight failed: ${errorMessage(error)}`);
     }
   }
 
@@ -526,13 +571,13 @@ function describePrerequisites(
   request: InstallPlanRequest,
   harnesses: readonly AgentKind[],
 ): string[] {
-  const prerequisites = ["checkout", ...harnesses.map((harness) => `${harness} CLI`)];
-  if ((request.operation ?? "install") !== "uninstall") {
-    prerequisites.push("Herdr", "Node.js 22.22.2 or newer");
-    if (!request.skipDependencies) prerequisites.push("npm", "checkout dependencies");
-    for (const harness of harnesses) {
-      if (harness !== "kilo") prerequisites.push(`${harness} Herdr integration`);
-    }
+  const prerequisites = ["checkout"];
+  if ((request.operation ?? "install") === "uninstall") return prerequisites;
+  prerequisites.push(...harnesses.map((harness) => `${harness} CLI`));
+  prerequisites.push("Herdr", "Node.js 22.22.2 or newer");
+  if (!request.skipDependencies) prerequisites.push("npm", "checkout dependencies");
+  for (const harness of harnesses) {
+    if (harness !== "kilo") prerequisites.push(`${harness} Herdr integration`);
   }
   return prerequisites;
 }
@@ -739,9 +784,8 @@ function destinationForSource(
   sourceRootPath: string,
   sourceFile: string,
 ): string {
-  const suffix = sourceFile === sourceRootPath
-    ? path.posix.basename(sourceFile)
-    : sourceFile.slice(`${sourceRootPath}/`.length);
+  if (sourceFile === sourceRootPath) return normalizeDestinationPath(destinationRootPath);
+  const suffix = sourceFile.slice(`${sourceRootPath}/`.length);
   return normalizeDestinationPath(`${destinationRootPath}/${suffix}`);
 }
 
@@ -784,16 +828,12 @@ async function planPayloadChange(
     action = "preserve";
     warning = `Owned file was modified and will be retained: ${destinationPath}. Re-run with --force only after reviewing the captured rollback state.`;
     warnings.push({ code: "modified-owned-content", path: destinationPath, message: warning });
-  } else if (state === "unrelated" && !force) {
+  } else if (state === "unrelated") {
     throw new InstallPreflightError([
-      `Destination conflict at ${destinationPath}. Re-run with --force only after deciding to replace unrelated content.`,
+      `Destination conflict at ${destinationPath}. Unrelated skill or payload files cannot be safely force-replaced because no displaced-file restoration contract exists.`,
     ]);
   } else {
     action = "replace";
-    if (state === "unrelated") {
-      warning = `Unrelated content will be replaced explicitly: ${destinationPath}.`;
-      warnings.push({ code: "conflict-forced", path: destinationPath, message: warning });
-    }
   }
 
   if (action === "replace" || action === "create") {
@@ -887,6 +927,15 @@ async function planConfigChanges(
       if (warning) warnings.push({ code: "conflict-forced", path: absolutePath, message: warning });
     }
 
+    if (
+      record &&
+      hashOwnedValue(record.installedValue) !== hashOwnedValue(target.installedValue)
+    ) {
+      const message =
+        `Checkout-backed registration ${absolutePath}#${target.key} changed; reinstall after moving the checkout or Node executable.`;
+      warnings.push({ code: "checkout-moved", path: absolutePath, message });
+    }
+
     if (action === "replace" || action === "create") {
       rollbackInputs.push({
         type: "config",
@@ -909,6 +958,104 @@ async function planConfigChanges(
       desiredValue: target.installedValue,
       semanticKey: target.key,
       adapterKind: target.format === "json" ? "claude-json" : "codex-toml",
+      ownershipState: state,
+      warning,
+    });
+  }
+}
+
+async function planExternalRegistrationChanges(
+  targets: readonly InstallExternalRegistrationTarget[],
+  harnesses: readonly AgentKind[],
+  destinationRoot: string,
+  manifest: OwnershipManifest | undefined,
+  force: boolean,
+  backend: InstallPreflightBackend,
+  destinationPreconditions: DestinationPrecondition[],
+  preconditionByPath: Map<string, DestinationPrecondition>,
+  ownedChanges: PlannedOwnedChange[],
+  rollbackInputs: RollbackInput[],
+  warnings: InstallWarning[],
+): Promise<void> {
+  for (const target of targets) {
+    if (!harnesses.includes(target.harness)) continue;
+    if (!backend.readExternalRegistration) {
+      throw new InstallPreflightError([
+        `External registration ${target.key} requires an injected inspection backend.`,
+      ]);
+    }
+    const relativePath = normalizeDestinationPath(target.path);
+    const absolutePath = resolveDestination(destinationRoot, relativePath);
+    const snapshot = await backend.readExternalRegistration(target);
+    if (snapshot.exists !== (snapshot.value !== undefined)) {
+      throw new InstallPreflightError([
+        `External registration ${target.key} returned an inconsistent snapshot.`,
+      ]);
+    }
+    const record = manifest?.externalRegistrations.find(
+      (candidate) => candidate.path === relativePath && candidate.key === target.key,
+    );
+    const state: PlannedOwnershipState = !record
+      ? "unrelated"
+      : !snapshot.exists
+        ? "owned-missing"
+        : hashOwnedValue(snapshot.value!) === record.installedValueSha256
+          ? "owned-unchanged"
+          : "owned-modified";
+    addExternalRegistrationPrecondition(
+      destinationRoot,
+      relativePath,
+      snapshot,
+      state,
+      record?.installedValueSha256,
+      destinationPreconditions,
+      preconditionByPath,
+    );
+
+    let action: PlannedChangeAction;
+    let warning: string | undefined;
+    if (!snapshot.exists) action = "create";
+    else if (snapshot.value === target.installedValue) action = "unchanged";
+    else if (state === "owned-modified" && !force) {
+      action = "preserve";
+      warning = `Owned external registration was modified and will be retained: ${target.key}.`;
+      warnings.push({ code: "modified-owned-content", path: target.key, message: warning });
+    } else if (state === "unrelated" && !force) {
+      throw new InstallPreflightError([
+        `External registration conflict at ${target.key}. Re-run with --force only when the prior value can be restored safely.`,
+      ]);
+    } else {
+      action = "replace";
+      if (state === "unrelated") {
+        warning = `Unrelated external registration will be replaced explicitly: ${target.key}.`;
+        warnings.push({ code: "conflict-forced", path: target.key, message: warning });
+      }
+    }
+
+    if (record && record.installedValue !== target.installedValue) {
+      const message =
+        `Checkout-backed registration ${target.key} moved from ${record.installedValue} to ${target.installedValue}; reinstall after moving the checkout.`;
+      warnings.push({ code: "checkout-moved", path: target.key, message });
+    }
+    if (action === "replace" || action === "create") {
+      rollbackInputs.push({
+        type: "external-registration",
+        path: absolutePath,
+        key: target.key,
+        existed: snapshot.exists,
+        value: snapshot.value,
+      });
+    }
+    ownedChanges.push({
+      id: `external-${hashText(`${target.harness}:${relativePath}:${target.key}`)}`,
+      artifactType: "external-registration",
+      harnesses: [target.harness],
+      destinationPath: absolutePath,
+      destinationRelativePath: relativePath,
+      action,
+      sha256: hashOwnedValue(target.installedValue),
+      desiredValue: target.installedValue,
+      semanticKey: target.key,
       ownershipState: state,
       warning,
     });
@@ -1027,6 +1174,32 @@ async function planManifestRemoval(
     restoreData,
   );
 
+  const externalDisplacedKeys = new Set(
+    manifest.displacedValues
+      .filter((record) =>
+        harnesses.includes(record.harness) &&
+        manifest.externalRegistrations.some(
+          (registration) =>
+            registration.harness === record.harness &&
+            registration.path === record.path &&
+            registration.key === record.key,
+        )
+      )
+      .map((record) => `${record.path}\u0000${record.key}`),
+  );
+  await planExternalDisplacedValues(
+    manifest,
+    harnesses,
+    destinationRoot,
+    backend,
+    destinationPreconditions,
+    preconditionByPath,
+    ownedChanges,
+    rollbackInputs,
+    warnings,
+    restoreData,
+  );
+
   for (const record of manifest.configRegistrations) {
     if (!harnesses.includes(record.harness)) continue;
     if (displacedKeys.has(`${record.path}\u0000${record.key}`)) continue;
@@ -1104,6 +1277,80 @@ async function planManifestRemoval(
       sha256: record.installedValueSha256,
       semanticKey: record.key,
       adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+      ownershipState: state,
+    });
+  }
+
+  for (const record of manifest.externalRegistrations) {
+    if (!harnesses.includes(record.harness)) continue;
+    if (externalDisplacedKeys.has(`${record.path}\u0000${record.key}`)) continue;
+    if (!backend.readExternalRegistration) {
+      throw new InstallPreflightError([
+        `External registration ${record.key} requires an injected inspection backend.`,
+      ]);
+    }
+    const target: InstallExternalRegistrationTarget = {
+      harness: record.harness,
+      path: record.path,
+      key: record.key,
+      installedValue: record.installedValue,
+    };
+    const snapshot = await backend.readExternalRegistration(target);
+    const state: PlannedOwnershipState = !snapshot.exists
+      ? "owned-missing"
+      : snapshot.value !== undefined && hashOwnedValue(snapshot.value) === record.installedValueSha256
+        ? "owned-unchanged"
+        : "owned-modified";
+    const absolutePath = resolveDestination(destinationRoot, record.path);
+    addExternalRegistrationPrecondition(
+      destinationRoot,
+      record.path,
+      snapshot,
+      state,
+      record.installedValueSha256,
+      destinationPreconditions,
+      preconditionByPath,
+    );
+    if (state !== "owned-unchanged") {
+      const message = state === "owned-modified"
+        ? `Modified owned external registration retained during uninstall: ${record.key}.`
+        : `Owned external registration is missing and was not changed: ${record.key}.`;
+      warnings.push({
+        code: state === "owned-modified" ? "modified-owned-content" : "missing-owned-content",
+        path: record.key,
+        message,
+      });
+      ownedChanges.push({
+        id: record.id,
+        artifactType: "external-registration",
+        harnesses: [record.harness],
+        destinationPath: absolutePath,
+        destinationRelativePath: record.path,
+        action: "preserve",
+        sha256: record.installedValueSha256,
+        semanticKey: record.key,
+        ownershipState: state,
+        preservationReason: state === "owned-modified" ? "modified" : "missing",
+        warning: message,
+      });
+      continue;
+    }
+    rollbackInputs.push({
+      type: "external-registration",
+      path: absolutePath,
+      key: record.key,
+      existed: true,
+      value: snapshot.value,
+    });
+    ownedChanges.push({
+      id: record.id,
+      artifactType: "external-registration",
+      harnesses: [record.harness],
+      destinationPath: absolutePath,
+      destinationRelativePath: record.path,
+      action: "remove",
+      sha256: record.installedValueSha256,
+      semanticKey: record.key,
       ownershipState: state,
     });
   }
@@ -1328,6 +1575,12 @@ async function planDisplacedValues(
 ): Promise<void> {
   for (const record of manifest.displacedValues) {
     if (!harnesses.includes(record.harness)) continue;
+    if (!manifest.configRegistrations.some(
+      (registration) =>
+        registration.harness === record.harness &&
+        registration.path === record.path &&
+        registration.key === record.key,
+    )) continue;
     if (onlyKeys && !onlyKeys.has(`${record.path}\u0000${record.key}`)) continue;
     const target: InstallConfigTarget = {
       harness: record.harness,
@@ -1398,6 +1651,100 @@ async function planDisplacedValues(
       desiredValue: comparison.value,
       semanticKey: record.key,
       adapterKind: record.harness === "codex" ? "codex-toml" : "claude-json",
+      ownershipState: state,
+    });
+  }
+}
+
+async function planExternalDisplacedValues(
+  manifest: OwnershipManifest,
+  harnesses: readonly AgentKind[],
+  destinationRoot: string,
+  backend: InstallPreflightBackend,
+  destinationPreconditions: DestinationPrecondition[],
+  preconditionByPath: Map<string, DestinationPrecondition>,
+  ownedChanges: PlannedOwnedChange[],
+  rollbackInputs: RollbackInput[],
+  warnings: InstallWarning[],
+  restoreData: RestoreData | undefined,
+): Promise<void> {
+  for (const record of manifest.displacedValues) {
+    if (!harnesses.includes(record.harness)) continue;
+    const registration = manifest.externalRegistrations.find(
+      (candidate) =>
+        candidate.harness === record.harness &&
+        candidate.path === record.path &&
+        candidate.key === record.key,
+    );
+    if (!registration) continue;
+    if (!backend.readExternalRegistration) {
+      throw new InstallPreflightError([
+        `External registration ${record.key} requires an injected inspection backend.`,
+      ]);
+    }
+    const target: InstallExternalRegistrationTarget = {
+      harness: record.harness,
+      path: record.path,
+      key: record.key,
+      installedValue: registration.installedValue,
+    };
+    const snapshot = await backend.readExternalRegistration(target);
+    const state: PlannedOwnershipState = !snapshot.exists
+      ? "owned-missing"
+      : snapshot.value !== undefined && hashOwnedValue(snapshot.value) === record.installedValueSha256
+        ? "owned-unchanged"
+        : "owned-modified";
+    const destinationPath = resolveDestination(destinationRoot, record.path);
+    addExternalRegistrationPrecondition(
+      destinationRoot,
+      record.path,
+      snapshot,
+      state,
+      record.installedValueSha256,
+      destinationPreconditions,
+      preconditionByPath,
+    );
+    const comparison = restoreData && snapshot.value !== undefined
+      ? compareDisplacedValue(record, snapshot.value, restoreData)
+      : { state: "missing-restore-data" as const };
+    if (comparison.state !== "restorable-displaced" || typeof comparison.value !== "string") {
+      const message =
+        `Displaced external registration retained at ${record.key}: ${comparison.state}.`;
+      warnings.push({ code: "modified-owned-content", path: record.key, message });
+      ownedChanges.push({
+        id: registration.id,
+        artifactType: "external-registration",
+        harnesses: [record.harness],
+        destinationPath,
+        destinationRelativePath: record.path,
+        action: "preserve",
+        sha256: record.installedValueSha256,
+        semanticKey: record.key,
+        ownershipState: state,
+        preservationReason: comparison.state === "missing-restore-data"
+          ? "missing-restore-data"
+          : "modified",
+        warning: message,
+      });
+      continue;
+    }
+    rollbackInputs.push({
+      type: "external-registration",
+      path: destinationPath,
+      key: record.key,
+      existed: true,
+      value: snapshot.value,
+    });
+    ownedChanges.push({
+      id: registration.id,
+      artifactType: "external-registration",
+      harnesses: [record.harness],
+      destinationPath,
+      destinationRelativePath: record.path,
+      action: "restore",
+      sha256: hashOwnedValue(comparison.value),
+      desiredValue: comparison.value,
+      semanticKey: record.key,
       ownershipState: state,
     });
   }
@@ -1701,7 +2048,7 @@ async function inspectRequiredParentDirectories(
 ): Promise<RequiredParentDirectory[]> {
   const harnessesByPath = new Map<string, Set<AgentKind>>();
   for (const change of changes) {
-    if (change.action !== "create") continue;
+    if (change.action !== "create" || change.artifactType === "external-registration") continue;
     let relativePath = path.posix.dirname(change.destinationRelativePath);
     while (relativePath !== ".") {
       const harnesses = harnessesByPath.get(relativePath) ?? new Set<AgentKind>();
@@ -1801,6 +2148,33 @@ function addConfigPrecondition(
   return precondition;
 }
 
+function addExternalRegistrationPrecondition(
+  destinationRoot: string,
+  relativePath: string,
+  snapshot: InstallExternalRegistrationSnapshot,
+  state: PlannedOwnershipState,
+  expectedSha256: string | undefined,
+  destinationPreconditions: DestinationPrecondition[],
+  preconditionByPath: Map<string, DestinationPrecondition>,
+): DestinationPrecondition {
+  const absolutePath = resolveDestination(destinationRoot, relativePath);
+  const key = `${absolutePath}#external-registration`;
+  const existing = preconditionByPath.get(key);
+  if (existing) return existing;
+  const precondition: DestinationPrecondition = {
+    path: absolutePath,
+    relativePath,
+    exists: snapshot.exists,
+    kind: "other",
+    sha256: snapshot.value === undefined ? undefined : hashOwnedValue(snapshot.value),
+    ownership: state,
+    expectedSha256,
+  };
+  destinationPreconditions.push(precondition);
+  preconditionByPath.set(key, precondition);
+  return precondition;
+}
+
 function fileOwnershipState(
   manifest: OwnershipManifest | undefined,
   relativePath: string,
@@ -1878,11 +2252,15 @@ function readConfigSnapshot(
         sha256: createHash("sha256").update(content, "utf8").digest("hex"),
       };
     }
-    if (!isParseableToml(content)) throw new Error("invalid TOML");
+    const document = parseToml(content) as unknown;
+    const selected = selectConfigValue(document, target.key);
+    if (selected !== undefined && !isJsonValue(selected)) {
+      throw new Error("unsupported TOML registration value");
+    }
     return {
       exists: true,
       parseable: true,
-      value: selectTomlValue(content, target.key),
+      value: selected,
       content,
       sha256: createHash("sha256").update(content, "utf8").digest("hex"),
     };
@@ -1891,96 +2269,14 @@ function readConfigSnapshot(
   }
 }
 
-function selectConfigValue(value: JsonValue, key: string): JsonValue | undefined {
-  let current: JsonValue | undefined = value;
+function selectConfigValue(value: unknown, key: string): JsonValue | undefined {
+  let current: unknown = value;
   for (const segment of key.split(".")) {
     if (current === null || typeof current !== "object" || Array.isArray(current)) return undefined;
-    current = current[segment];
+    current = (current as Record<string, unknown>)[segment];
     if (current === undefined) return undefined;
   }
-  return current;
-}
-
-function selectTomlValue(source: string, key: string): JsonValue | undefined {
-  let section = "";
-  const sectionValues: Record<string, JsonValue> = {};
-  for (const line of source.split(/\r?\n/)) {
-    const withoutComment = stripTomlComment(line).trim();
-    const sectionName = parseTomlSection(withoutComment);
-    if (sectionName !== undefined) {
-      section = sectionName;
-      continue;
-    }
-    const match = withoutComment.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
-    if (!match) continue;
-    const value = parseTomlValue(match[2]);
-    if (value === undefined) continue;
-    const fullKey = section ? `${section}.${match[1]}` : match[1];
-    if (fullKey === key || match[1] === key) return value;
-    if (key.startsWith(`${fullKey}.`)) {
-      const nested = selectConfigValue(value, key.slice(fullKey.length + 1));
-      if (nested !== undefined) return nested;
-    }
-    if (fullKey.startsWith(`${key}.`)) sectionValues[match[1]] = value;
-  }
-  return Object.keys(sectionValues).length > 0 ? sectionValues : undefined;
-}
-
-function parseTomlValue(value: string): JsonValue | undefined {
-  const trimmed = value.trim();
-  if (trimmed === "true" || trimmed === "false") return trimmed === "true";
-  if (/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(trimmed)) return Number(trimmed);
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return trimmed.slice(1, -1);
-  }
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    const items = splitTomlItems(trimmed.slice(1, -1));
-    const parsed = items.map(parseTomlValue);
-    return parsed.every((item) => item !== undefined) ? parsed as JsonValue[] : undefined;
-  }
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    const result: Record<string, JsonValue> = {};
-    for (const item of splitTomlItems(trimmed.slice(1, -1))) {
-      const match = item.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
-      if (!match) return undefined;
-      const parsed = parseTomlValue(match[2]);
-      if (parsed === undefined) return undefined;
-      result[match[1]] = parsed;
-    }
-    return result;
-  }
-  if (/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)?$/.test(trimmed)) {
-    return trimmed;
-  }
-  return undefined;
-}
-
-function splitTomlItems(source: string): string[] {
-  const items: string[] = [];
-  let start = 0;
-  let quote: "'" | '"' | undefined;
-  let escaped = false;
-  let depth = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote) {
-      if (quote === '"' && escaped) escaped = false;
-      else if (quote === '"' && character === "\\") escaped = true;
-      else if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === "'" || character === '"') quote = character;
-    else if (character === "[" || character === "{") depth += 1;
-    else if (character === "]" || character === "}") depth -= 1;
-    else if (character === "," && depth === 0) {
-      items.push(source.slice(start, index).trim());
-      start = index + 1;
-    }
-  }
-  const finalItem = source.slice(start).trim();
-  if (finalItem) items.push(finalItem);
-  return items;
+  return isJsonValue(current) ? current : undefined;
 }
 
 function normalizeDestinationPath(value: string): string {
@@ -2071,69 +2367,6 @@ async function probeIntegration(harness: AgentKind): Promise<boolean> {
       resolve(code === 0 && new RegExp(`^${harness}:\\s+current\\b`, "mi").test(output)),
     );
   });
-}
-
-function isParseableToml(source: string): boolean {
-  for (const line of source.split(/\r?\n/)) {
-    const trimmed = stripTomlComment(line).trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (parseTomlSection(trimmed) !== undefined) {
-      continue;
-    }
-    const assignment = trimmed.match(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\s*=\s*(.*)$/);
-    if (
-      !assignment ||
-      !isBalancedTomlValue(assignment[1]) ||
-      parseTomlValue(assignment[1]) === undefined
-    ) return false;
-  }
-  return true;
-}
-
-function parseTomlSection(value: string): string | undefined {
-  const single = value.match(/^\[([^\[\]]+)\]$/);
-  if (single && isTomlKeyPath(single[1].trim())) return single[1].trim();
-  const array = value.match(/^\[\[([^\[\]]+)\]\]$/);
-  const section = array?.[1].trim();
-  return section && isTomlKeyPath(section) ? section : undefined;
-}
-
-function isTomlKeyPath(value: string): boolean {
-  return /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(value);
-}
-
-function isBalancedTomlValue(value: string): boolean {
-  const stack: string[] = [];
-  let quote: "'" | '"' | undefined;
-  let escaped = false;
-  for (const character of value.trim()) {
-    if (quote) {
-      if (quote === '"' && escaped) escaped = false;
-      else if (quote === '"' && character === "\\") escaped = true;
-      else if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === "'" || character === '"') quote = character;
-    else if (character === "[" || character === "{") stack.push(character);
-    else if (character === "]" && stack.pop() !== "[") return false;
-    else if (character === "}" && stack.pop() !== "{") return false;
-  }
-  return quote === undefined && stack.length === 0 && value.trim().length > 0;
-}
-
-function stripTomlComment(line: string): string {
-  let quote: "'" | '"' | undefined;
-  let escaped = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (quote) {
-      if (quote === '"' && escaped) escaped = false;
-      else if (quote === '"' && character === "\\") escaped = true;
-      else if (character === quote) quote = undefined;
-    } else if (character === "'" || character === '"') quote = character;
-    else if (character === "#") return line.slice(0, index);
-  }
-  return line;
 }
 
 function errorMessage(error: unknown): string {

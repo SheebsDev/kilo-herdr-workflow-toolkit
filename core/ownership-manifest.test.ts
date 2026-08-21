@@ -104,6 +104,18 @@ test("schema accepts each supported scope, harness, and payload artifact type", 
   );
 });
 
+test("version-one manifests without external registrations normalize additively", () => {
+  const current = createFixtureManifest();
+  const legacy = structuredClone(current) as Partial<OwnershipManifest>;
+  delete legacy.externalRegistrations;
+
+  const normalized = validateOwnershipManifest(legacy);
+
+  assert.deepEqual(normalized.externalRegistrations, []);
+  assert.equal("externalRegistrations" in legacy, false);
+  assert.match(serializeOwnershipManifest(normalized), /"externalRegistrations": \[\]/);
+});
+
 test("malformed, duplicate, unsupported, absolute, traversal, and workflow paths are rejected", () => {
   const manifest = createFixtureManifest();
   const invalidManifests: unknown[] = [

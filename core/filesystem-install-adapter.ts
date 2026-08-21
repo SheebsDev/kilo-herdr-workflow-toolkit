@@ -852,9 +852,9 @@ export class FileSystemInstallAdapter implements InstallTransitionAdapter {
   }
 
   private assertSupported(transition: InstallTransition): void {
-    if (transition.kind === "opaque-registration") {
+    if (transition.kind === "opaque-registration" || transition.kind === "external-registration") {
       throw new Error(
-        `Transition "${transition.id}" requires its ${transition.stage.adapterKind} adapter.`,
+        `Transition "${transition.id}" requires its dedicated registration adapter.`,
       );
     }
   }

@@ -168,6 +168,15 @@ export interface ConfigRegistrationRecord {
   installedValueSha256: string;
 }
 
+export interface ExternalRegistrationRecord {
+  id: string;
+  harness: AgentKind;
+  path: string;
+  key: string;
+  installedValue: string;
+  installedValueSha256: string;
+}
+
 export interface InsertedBlockRecord {
   id: string;
   harness: AgentKind;
@@ -197,6 +206,7 @@ export interface ResidualOwnershipRecord {
     | "directory"
     | "dependency"
     | "config-registration"
+    | "external-registration"
     | "inserted-block";
   path: string;
   reason: "modified" | "concurrent-change" | "missing-restore-data";
@@ -217,6 +227,7 @@ export interface OwnershipManifest {
   directories: OwnedDirectoryRecord[];
   dependencies: OwnedDependencyRecord[];
   configRegistrations: ConfigRegistrationRecord[];
+  externalRegistrations: ExternalRegistrationRecord[];
   insertedBlocks: InsertedBlockRecord[];
   displacedValues: DisplacedValueRecord[];
   residualOwnership: ResidualOwnershipRecord[];
@@ -239,6 +250,7 @@ export interface OwnershipManifestInput
       | "directories"
       | "dependencies"
       | "configRegistrations"
+      | "externalRegistrations"
       | "insertedBlocks"
       | "displacedValues"
       | "residualOwnership"
@@ -268,6 +280,7 @@ export function createOwnershipManifest(
     directories: input.directories ?? [],
     dependencies: input.dependencies ?? [],
     configRegistrations: input.configRegistrations ?? [],
+    externalRegistrations: input.externalRegistrations ?? [],
     insertedBlocks: input.insertedBlocks ?? [],
     displacedValues: input.displacedValues ?? [],
     residualOwnership: input.residualOwnership ?? [],
@@ -304,11 +317,16 @@ export function validateOwnershipManifest(
     throw new Error("Ownership manifest has invalid timestamps.");
   }
 
-  const manifest = value as unknown as OwnershipManifest;
+  // externalRegistrations was added additively to version 1. Normalize older
+  // manifests on read so their next successful transaction persists the field.
+  const manifest = (value.externalRegistrations === undefined
+    ? { ...value, externalRegistrations: [] }
+    : value) as unknown as OwnershipManifest;
   validateFiles(manifest, options);
   validateDirectories(manifest, options);
   validateDependencies(manifest, options);
   validateConfigRegistrations(manifest, options);
+  validateExternalRegistrations(manifest, options);
   validateInsertedBlocks(manifest, options);
   validateDisplacedValues(manifest, options);
   validateResidualOwnership(manifest, options);
@@ -318,6 +336,7 @@ export function validateOwnershipManifest(
       ...manifest.directories,
       ...manifest.dependencies,
       ...manifest.configRegistrations,
+      ...manifest.externalRegistrations,
       ...manifest.insertedBlocks,
       ...manifest.displacedValues,
       ...manifest.residualOwnership,
@@ -498,6 +517,13 @@ export type OwnershipCandidate =
       value?: JsonValue;
     }
   | {
+      type: "external-registration";
+      path: string;
+      key: string;
+      exists: boolean;
+      value?: string;
+    }
+  | {
       type: "inserted-block";
       path: string;
       marker: string;
@@ -547,6 +573,18 @@ export function compareOwnership(
     if (!candidate.exists) return { state: "owned-missing", recordId: record.id };
     return candidate.value !== undefined &&
       hashOwnedValue(candidate.value) === record.installedValueSha256
+      ? { state: "owned-unchanged", recordId: record.id }
+      : { state: "owned-modified", recordId: record.id };
+  }
+
+  if (candidate.type === "external-registration") {
+    const record = manifest.externalRegistrations.find(
+      (entry) => entry.path === candidate.path && entry.key === candidate.key,
+    );
+    if (!record) return { state: "unrelated" };
+    if (!candidate.exists) return { state: "owned-missing", recordId: record.id };
+    return candidate.value !== undefined &&
+        hashOwnedValue(candidate.value) === record.installedValueSha256
       ? { state: "owned-unchanged", recordId: record.id }
       : { state: "owned-modified", recordId: record.id };
   }
@@ -762,6 +800,30 @@ function validateConfigRegistrations(
   }
 }
 
+function validateExternalRegistrations(
+  manifest: OwnershipManifest,
+  options: ManifestValidationOptions,
+): void {
+  assertArray(manifest.externalRegistrations, "external registrations");
+  assertUnique(manifest.externalRegistrations.map((record) => record.id), "external registration IDs");
+  assertUnique(
+    manifest.externalRegistrations.map((record) => `${record.path}\u0000${record.key}`),
+    "external registration targets",
+  );
+  for (const record of manifest.externalRegistrations) {
+    assertSingleHarnessRecord(record, "external registration");
+    assertPath(record.path, options.root);
+    assertKey(record.key, "external registration key");
+    if (typeof record.installedValue !== "string") {
+      throw new Error(`External registration "${record.id}" value must be text.`);
+    }
+    assertSha256(record.installedValueSha256, `external registration "${record.id}" hash`);
+    if (hashOwnedValue(record.installedValue) !== record.installedValueSha256) {
+      throw new Error(`External registration "${record.id}" value hash does not match.`);
+    }
+  }
+}
+
 function validateInsertedBlocks(
   manifest: OwnershipManifest,
   options: ManifestValidationOptions,
@@ -834,6 +896,7 @@ function validateResidualOwnership(
         "directory",
         "dependency",
         "config-registration",
+        "external-registration",
         "inserted-block",
       ].includes(record.artifactType)
     ) {
@@ -920,6 +983,7 @@ function allRecords(manifest: OwnershipManifest): Array<{ id: string; harnesses:
     ...manifest.directories,
     ...manifest.dependencies,
     ...manifest.configRegistrations.map((record) => ({ ...record, harnesses: [record.harness] })),
+    ...manifest.externalRegistrations.map((record) => ({ ...record, harnesses: [record.harness] })),
     ...manifest.insertedBlocks.map((record) => ({ ...record, harnesses: [record.harness] })),
     ...manifest.displacedValues.map((record) => ({ ...record, harnesses: [record.harness] })),
   ];

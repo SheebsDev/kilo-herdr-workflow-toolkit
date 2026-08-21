@@ -31,6 +31,7 @@ interface ClaudeJsonPreparedHandle {
   readonly transitionId: string;
   readonly targetPath: string;
   readonly baselineDocument: JsonObject;
+  readonly baselineExists: boolean;
   readonly baselineMode?: number;
 }
 
@@ -85,6 +86,7 @@ export class ClaudeJsonInstallAdapter implements InstallTransitionAdapter {
       transitionId: transition.id,
       targetPath: resolveTargetPath(transition),
       baselineDocument: cloneObject(resource.document),
+      baselineExists: resource.exists,
       baselineMode: resource.mode,
     };
     if (this.handles.has(transition.id)) {
@@ -147,7 +149,11 @@ export class ClaudeJsonInstallAdapter implements InstallTransitionAdapter {
       transition.stage.changes,
       handle.baselineDocument,
     );
-    await writeResource(handle.targetPath, next, current.mode ?? handle.baselineMode ?? 0o600, signal);
+    if (!handle.baselineExists && Object.keys(next).length === 0) {
+      await rm(handle.targetPath, { force: true });
+    } else {
+      await writeResource(handle.targetPath, next, current.mode ?? handle.baselineMode ?? 0o600, signal);
+    }
 
     return {
       transitionId: transition.id,
@@ -360,6 +366,9 @@ function restoreChanges(
     } else {
       delete servers[name];
     }
+  }
+  if (baseline.mcpServers === undefined && Object.keys(servers).length === 0) {
+    delete next.mcpServers;
   }
   return next;
 }

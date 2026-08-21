@@ -658,6 +658,9 @@ function resourcePostimagesEqual(
   ) {
     return left.sha256 === right.sha256;
   }
+  if (left.type === "external-registration" && right.type === "external-registration") {
+    return left.valueSha256 === right.valueSha256;
+  }
   return true;
 }
 
