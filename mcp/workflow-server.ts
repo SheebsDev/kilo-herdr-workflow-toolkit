@@ -50,7 +50,6 @@ export interface WorkflowMcpService {
 export interface WorkflowMcpServerOptions {
   context: ProjectContext;
   service: WorkflowMcpService;
-  exposeTools?: boolean;
 }
 
 export interface StartedWorkflowMcpServer {
@@ -81,9 +80,7 @@ export function createWorkflowMcpServer(
     },
   );
 
-  if (options.exposeTools !== false) {
-    registerTools(server, options.service, options.context);
-  }
+  registerTools(server, options.service, options.context);
 
   let serviceDisposePromise: Promise<void> | undefined;
   const disposeService = (): Promise<void> => {

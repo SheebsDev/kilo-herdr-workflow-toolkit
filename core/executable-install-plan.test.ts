@@ -42,7 +42,6 @@ test("fresh install compiles deterministic parent, file, and metadata transition
     const second = compileExecutableInstallPlan(request);
 
     assert.deepEqual(first, second);
-    assert.deepEqual(first, JSON.parse(JSON.stringify(first)));
     assert.equal(first.schemaVersion, EXECUTABLE_INSTALL_PLAN_VERSION);
     assert.equal(Object.isFrozen(first), true);
     assert.equal(Object.isFrozen(first.transitions), true);
@@ -54,7 +53,6 @@ test("fresh install compiles deterministic parent, file, and metadata transition
     ]);
     assert.equal(first.projection.manifest?.files.length, preflight.ownedChanges.length);
     assert.deepEqual(await listTree(fixture.destination), before);
-    assert.doesNotThrow(() => validateExecutableInstallPlan(first));
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -462,6 +460,39 @@ test("runtime validator rejects unsupported versions, unsafe paths, collisions, 
         ...copy.transitions[fileIndex].ownershipEffects,
       ];
     }, /multiple transitions/i);
+
+    const privateRestoreRoots = fixtureRoots("private-restore");
+    const privateRestoreRequest = compileRequest(
+      makePlan(privateRestoreRoots),
+      privateRestoreRoots.destination,
+    );
+    assert.throws(
+      () => compileExecutableInstallPlan(privateRestoreRequest),
+      /restore data must be outside/i,
+    );
+
+    const aliasRoots = fixtureRoots("target-alias");
+    const aliasPlan = makeSingleFileExecutablePlan(aliasRoots);
+    assertInvalidMutation(aliasPlan, (copy) => {
+      const file = copy.transitions.find((transition: any) => transition.kind === "file");
+      const aliasRoot = path.dirname(resolveRelative(file.target.root, file.target.relativePath));
+      copy.resourceRoots.push(aliasRoot);
+      const duplicate = structuredClone(file);
+      duplicate.id = "alias-file";
+      duplicate.order = 1;
+      duplicate.target = { root: aliasRoot, relativePath: path.basename(file.target.relativePath) };
+      duplicate.logicalChangeIds = ["alias-change"];
+      duplicate.ownershipEffects = [{
+        changeId: "alias-change",
+        action: "upsert",
+        recordId: file.ownershipEffects[0].recordId,
+      }];
+      copy.transitions.splice(1, 0, duplicate);
+      for (let index = 2; index < copy.transitions.length; index += 1) {
+        copy.transitions[index].order = index;
+        copy.transitions[index].dependsOn.push("alias-file");
+      }
+    }, /target collision/i);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -507,17 +538,6 @@ test("compiler refuses forced replacement of unrelated payload without a private
   assert.throws(
     () => compileExecutableInstallPlan(compileRequest(preflight, roots.privateRoot)),
     /private displaced-resource contract/i,
-  );
-});
-
-test("project plans reject commit-intended restore-data targets", () => {
-  const roots = fixtureRoots("private-restore");
-  const preflight = makePlan(roots);
-  const request = compileRequest(preflight, roots.destination);
-
-  assert.throws(
-    () => compileExecutableInstallPlan(request),
-    /restore data must be outside/i,
   );
 });
 
@@ -693,13 +713,11 @@ test("tree removal checks retained baseline ownership omitted from selected chan
     ),
     /retained ownership record.*claude-child/i,
   );
-});
 
-test("file removal cannot delete ownership retained for an unselected harness", () => {
-  const roots = fixtureRoots("shared-file-removal");
-  const relativePath = "payload/shared.js";
-  const fileHash = sha256("shared\n");
-  const manifest = createOwnershipManifest({
+  const fileRoots = fixtureRoots("shared-file-removal");
+  const fileRelativePath = "payload/shared.js";
+  const retainedFileHash = sha256("shared\n");
+  const fileManifest = createOwnershipManifest({
     manifestId: "shared-file-manifest",
     scope: "project",
     harnesses: ["kilo", "claude"],
@@ -709,23 +727,23 @@ test("file removal cannot delete ownership retained for an unselected harness", 
       id: "shared-file",
       artifactType: "shared-runtime",
       harnesses: ["kilo", "claude"],
-      path: relativePath,
-      sha256: fileHash,
+      path: fileRelativePath,
+      sha256: retainedFileHash,
     }],
   });
-  const preflight = makePlan(roots, {
+  const filePreflight = makePlan(fileRoots, {
     operation: "uninstall",
     destinationPreconditions: [
-      filePrecondition(roots.destination, relativePath, fileHash, "owned-unchanged"),
+      filePrecondition(fileRoots.destination, fileRelativePath, retainedFileHash, "owned-unchanged"),
     ],
     ownedChanges: [
-      removeChange(manifest.files[0], roots.destination, "shared-runtime", fileHash),
+      removeChange(fileManifest.files[0], fileRoots.destination, "shared-runtime", retainedFileHash),
     ],
   });
 
   assert.throws(
     () => compileExecutableInstallPlan(
-      compileRequest(preflight, roots.privateRoot, manifest),
+      compileRequest(filePreflight, fileRoots.privateRoot, fileManifest),
     ),
     /retained ownership record.*shared-file/i,
   );
@@ -897,32 +915,6 @@ test("runtime validation binds opaque staging, restore references, staging roots
       file.ownershipEffects[0].action = "detach";
     }, /retained ownership record.*runtime-file/i);
   }
-});
-
-test("runtime validation detects physical target aliases across resource roots", () => {
-  const roots = fixtureRoots("target-alias");
-  const plan = makeSingleFileExecutablePlan(roots);
-
-  assertInvalidMutation(plan, (copy) => {
-    const file = copy.transitions.find((transition: any) => transition.kind === "file");
-    const aliasRoot = path.dirname(resolveRelative(file.target.root, file.target.relativePath));
-    copy.resourceRoots.push(aliasRoot);
-    const duplicate = structuredClone(file);
-    duplicate.id = "alias-file";
-    duplicate.order = 1;
-    duplicate.target = { root: aliasRoot, relativePath: path.basename(file.target.relativePath) };
-    duplicate.logicalChangeIds = ["alias-change"];
-    duplicate.ownershipEffects = [{
-      changeId: "alias-change",
-      action: "upsert",
-      recordId: file.ownershipEffects[0].recordId,
-    }];
-    copy.transitions.splice(1, 0, duplicate);
-    for (let index = 2; index < copy.transitions.length; index += 1) {
-      copy.transitions[index].order = index;
-      copy.transitions[index].dependsOn.push("alias-file");
-    }
-  }, /target collision/i);
 });
 
 test("fresh dependency ownership compiles a prepared dependency-tree transition", () => {

@@ -6,7 +6,6 @@ import test from "node:test";
 
 import {
   createWindowsEnvironmentBackend,
-  defaultProjectRestoreRoot,
 } from "./windows-installer.ts";
 
 test("the Windows test environment backend preserves unrelated values and uses compare-and-set", async () => {
@@ -46,14 +45,4 @@ test("the Windows test environment backend preserves unrelated values and uses c
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test("default project restore roots are stable, outside the project, and path-safe", () => {
-  const home = path.resolve("C:/Users/test user");
-  const project = path.resolve("C:/Work/project with spaces");
-  const first = defaultProjectRestoreRoot(home, project);
-  const second = defaultProjectRestoreRoot(home, project);
-  assert.equal(first, second);
-  assert.match(first, /project-restore-data/);
-  assert.equal(path.dirname(path.dirname(path.dirname(first))), path.join(home, ".config"));
 });

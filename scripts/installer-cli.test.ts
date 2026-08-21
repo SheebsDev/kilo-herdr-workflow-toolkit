@@ -4,21 +4,32 @@ import * as path from "node:path";
 import test from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+const CASES = [
+  {
+    name: "harness help",
+    arguments: ["install", "--help"],
+    code: 0,
+    stream: "stdout",
+    fragments: [/kilo\|claude\|codex\|all/, /Kilo-only default/],
+  },
+  {
+    name: "invalid harness",
+    arguments: ["install", "--harness", "unknown"],
+    code: 2,
+    stream: "stderr",
+    fragments: [/Unsupported harness/],
+  },
+] as const;
 
-test("Unix and Windows installer entrypoints expose the same harness help", async () => {
+test("installer entrypoints expose harness help and reject invalid harnesses", async () => {
   for (const script of ["unix-install.ts", "windows-install.ts"]) {
-    const result = await run(script, "install", "--help");
-    assert.equal(result.code, 0, `${script}: ${result.stderr}`);
-    assert.match(result.stdout, /kilo\|claude\|codex\|all/);
-    assert.match(result.stdout, /Kilo-only default/);
-  }
-});
-
-test("installer entrypoints reject invalid harnesses before any install work", async () => {
-  for (const script of ["unix-install.ts", "windows-install.ts"]) {
-    const result = await run(script, "install", "--harness", "unknown");
-    assert.equal(result.code, 2, `${script}: ${result.stderr}`);
-    assert.match(result.stderr, /Unsupported harness/);
+    for (const case_ of CASES) {
+      const result = await run(script, ...case_.arguments);
+      assert.equal(result.code, case_.code, `${script} ${case_.name}: ${result.stderr}`);
+      for (const fragment of case_.fragments) {
+        assert.match(result[case_.stream], fragment);
+      }
+    }
   }
 });
 

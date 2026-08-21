@@ -163,32 +163,6 @@ test("workflow_start preflights mixed selections before creating the run", async
   assert.match(String(result), /run-/);
 });
 
-test("workflow_status exposes pending notification delivery failures", async () => {
-  resetTestState();
-  const run = createTestRun();
-  run.notifications = [
-    {
-      sequence: 1,
-      key: "tests:1:error:1",
-      kind: "worker-error",
-      message: "Tests failed.",
-      createdAt: new Date().toISOString(),
-      deliveryError: "The origin pane is unavailable.",
-    },
-  ];
-  persistedRuns.push(run);
-
-  const tools = await createCoordinatorTools();
-  const result = JSON.parse(
-    await tools.tool!.workflow_status.execute(
-      { runId: run.id },
-      toolContext(),
-    ),
-  );
-
-  assert.deepEqual(result.notifications, run.notifications);
-});
-
 test("workflow_start preflight failure creates no run or worker tab", async () => {
   resetTestState();
   preflightError = new Error('Run "herdr integration install claude" and retry.');

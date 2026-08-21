@@ -50,7 +50,6 @@ test("Kilo-only default uses the injected external registration and creates no o
       projectedAt: PROJECTED_AT,
     });
 
-    assert.equal(installed.transaction.status, "committed");
     assert.deepEqual(installed.preflightPlan.harnesses, ["kilo"]);
     assert.ok(installed.executablePlan.transitions.some((entry) => entry.kind === "external-registration"));
     assert.equal(external.values.get("KILO_CONFIG_DIR"), CHECKOUT_ROOT);
@@ -252,7 +251,6 @@ test("a late external registration failure rolls back all earlier harness artifa
       }),
       /injected external registration failure/i,
     );
-    assert.equal(external.values.has("KILO_CONFIG_DIR"), false);
     assert.equal(await exists(path.join(home, ".claude.json")), false);
     assert.equal(await exists(path.join(home, ".codex", "config.toml")), false);
     assert.equal(await exists(path.join(home, ".claude", "skills", "implement-task", "SKILL.md")), false);

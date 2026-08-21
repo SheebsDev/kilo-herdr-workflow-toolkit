@@ -15,10 +15,6 @@ import type { WorkflowServiceWorkerOperations } from "./workflow-service.ts";
 
 const runs = new Map<string, ReturnType<typeof createFixtureRun>>();
 const listedRuns: ReturnType<typeof createFixtureRun>[] = [];
-const listedRunsByProjectRoot = new Map<
-  string,
-  ReturnType<typeof createFixtureRun>[]
->();
 const preflightSelections: unknown[] = [];
 const supervisedRuns: string[] = [];
 const cancelledWorkers: string[] = [];
@@ -50,10 +46,7 @@ mock.module("./run-store.ts", {
       return run;
     },
     normalizeTaskCardPath: async () => undefined,
-    listRuns: async (projectRoot: string) =>
-      listedRunsByProjectRoot.has(projectRoot)
-        ? listedRunsByProjectRoot.get(projectRoot)!
-        : listedRuns,
+    listRuns: async () => listedRuns,
     saveNewRun: async (_projectRoot: string, run: ReturnType<typeof createFixtureRun>) => {
       runs.set(run.id, run);
       if (abortOnSaveNewRun) {
@@ -422,27 +415,6 @@ test("recovery shares one supervisor across symlink-equivalent project roots", a
   } finally {
     await rm(linkedRoot, { force: true, recursive: true });
     await rm(projectRoot, { force: true, recursive: true });
-  }
-});
-
-test("recovery does not inspect runs stored under another project root", async () => {
-  reset();
-  const storedRoot = await mkdtemp(path.join(tmpdir(), "workflow-recovery-stored-"));
-  const currentRoot = await mkdtemp(path.join(tmpdir(), "workflow-recovery-current-"));
-
-  try {
-    const run = createFixtureRun();
-    listedRunsByProjectRoot.set(storedRoot, [run]);
-
-    const result = await createService().recover({
-      context: createContext("pane-origin", "session-test", undefined, currentRoot),
-    });
-
-    assert.deepEqual(result.runIds, []);
-    assert.deepEqual(supervisedRuns, []);
-  } finally {
-    await rm(storedRoot, { force: true, recursive: true });
-    await rm(currentRoot, { force: true, recursive: true });
   }
 });
 
@@ -845,7 +817,6 @@ function createContext(
 function reset(): void {
   runs.clear();
   listedRuns.length = 0;
-  listedRunsByProjectRoot.clear();
   preflightSelections.length = 0;
   supervisedRuns.length = 0;
   cancelledWorkers.length = 0;

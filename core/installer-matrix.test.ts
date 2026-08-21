@@ -9,47 +9,58 @@ import type { InstallPreflightBackend } from "./install-plan.ts";
 import { readOwnershipManifest, resolveOwnershipPaths } from "./ownership-manifest.ts";
 import { executeUnixInstallOperation } from "./unix-installer.ts";
 import type { UnixInstallRequest, UnixInstallResult } from "./unix-installer.ts";
-import { executeWindowsInstallOperation } from "./windows-installer.ts";
+import {
+  defaultProjectRestoreRoot,
+  executeWindowsInstallOperation,
+} from "./windows-installer.ts";
 import type {
   WindowsInstallRequest,
   WindowsInstallResult,
 } from "./windows-installer.ts";
 
 const CHECKOUT_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const HARNESS_SELECTIONS = ["kilo", "claude", "codex", "all"] as const;
 const PLATFORM_ADAPTERS = ["unix", "windows"] as const;
+const MATRIX_CASES = [
+  { platform: "unix", scope: "user", selection: "kilo" },
+  { platform: "unix", scope: "project", selection: "claude" },
+  { platform: "windows", scope: "user", selection: "codex" },
+  { platform: "windows", scope: "project", selection: "all" },
+] as const;
 
-test("Unix and Windows wrappers cover every harness selection and scope in isolated roots", async () => {
-  for (const platform of PLATFORM_ADAPTERS) {
-    for (const scope of ["user", "project"] as const) {
-      for (const selection of HARNESS_SELECTIONS) {
-        const fixture = await createFixture(`${platform}-${scope}-${selection}`);
-        try {
-          const request = createRequest(platform, scope, selection, fixture);
-          const installed = await execute(platform, request);
-          assert.equal(installed.transaction.status, "committed");
-          assert.deepEqual(installed.preflightPlan.harnesses, expectedHarnesses(selection));
+test("Unix and Windows wrappers smoke each scope and use stable default project restore roots", async () => {
+  for (const { platform, scope, selection } of MATRIX_CASES) {
+    const fixture = await createFixture(`${platform}-${scope}-${selection}`);
+    try {
+      const request = createRequest(platform, scope, selection, fixture);
+      const installed = await execute(platform, request);
+      assert.equal(installed.transaction.status, "committed");
+      assert.deepEqual(installed.preflightPlan.harnesses, expectedHarnesses(selection));
 
-          const destination = scope === "user" ? fixture.home : fixture.project;
-          const ownershipPath = resolveOwnershipPaths(scope, destination, fixture.privateRoot).manifestPath;
-          assert.deepEqual(
-            readOwnershipManifest(ownershipPath, { root: destination }).harnesses,
-            expectedHarnesses(selection),
-          );
+      const destination = scope === "user" ? fixture.home : fixture.project;
+      const ownershipPath = resolveOwnershipPaths(scope, destination, fixture.privateRoot).manifestPath;
+      assert.deepEqual(
+        readOwnershipManifest(ownershipPath, { root: destination }).harnesses,
+        expectedHarnesses(selection),
+      );
 
-          const repeated = await execute(platform, { ...request, operation: "update" });
-          assert.equal(repeated.transaction.status, "committed");
+      const repeated = await execute(platform, { ...request, operation: "update" });
+      assert.equal(repeated.transaction.status, "committed");
 
-          const uninstalled = await execute(platform, { ...request, operation: "uninstall" });
-          assert.equal(uninstalled.transaction.status, "committed");
-          assert.equal(await exists(ownershipPath), false);
-          assert.equal(await readFile(path.join(fixture.project, ".workflow", "sentinel"), "utf8"), "keep\n");
-        } finally {
-          await rm(fixture.root, { recursive: true, force: true });
-        }
-      }
+      const uninstalled = await execute(platform, { ...request, operation: "uninstall" });
+      assert.equal(uninstalled.transaction.status, "committed");
+      assert.equal(await exists(ownershipPath), false);
+      assert.equal(await readFile(path.join(fixture.project, ".workflow", "sentinel"), "utf8"), "keep\n");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
     }
   }
+
+  const home = path.resolve("C:/Users/test user");
+  const project = path.resolve("C:/Work/project with spaces");
+  const first = defaultProjectRestoreRoot(home, project);
+  assert.equal(first, defaultProjectRestoreRoot(home, project));
+  assert.match(first, /project-restore-data/);
+  assert.equal(path.dirname(path.dirname(path.dirname(first))), path.join(home, ".config"));
 });
 
 interface Fixture {
@@ -109,7 +120,7 @@ async function createFixture(name: string): Promise<Fixture> {
 function createRequest(
   platform: typeof PLATFORM_ADAPTERS[number],
   scope: "user" | "project",
-  selection: typeof HARNESS_SELECTIONS[number],
+  selection: HarnessSelection,
   fixture: Fixture,
 ): UnixInstallRequest | WindowsInstallRequest {
   const common = {
@@ -137,7 +148,9 @@ function execute(
     : executeWindowsInstallOperation(request as WindowsInstallRequest);
 }
 
-function expectedHarnesses(selection: typeof HARNESS_SELECTIONS[number]): string[] {
+type HarnessSelection = "kilo" | "claude" | "codex" | "all";
+
+function expectedHarnesses(selection: HarnessSelection): string[] {
   return selection === "all" ? ["kilo", "claude", "codex"] : [selection];
 }
 

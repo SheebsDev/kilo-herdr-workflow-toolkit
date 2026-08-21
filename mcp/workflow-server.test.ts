@@ -105,27 +105,6 @@ test("MCP calls share the service data and request cancellation signal", async (
   }
 });
 
-test("review-worker environments expose no orchestration tools", async () => {
-  const started = createWorkflowMcpServer({
-    service: createService(),
-    context: createContext(),
-    exposeTools: false,
-  });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "test-client", version: "1.0.0" });
-
-  try {
-    await Promise.all([
-      client.connect(clientTransport),
-      started.server.connect(serverTransport),
-    ]);
-    assert.equal(client.getServerCapabilities()?.tools, undefined);
-  } finally {
-    await started.close();
-    await client.close();
-  }
-});
-
 test("stdio transport covers every operation, cancellation, and startup recovery", async () => {
   const calls: Array<{ operation: string; signal: AbortSignal }> = [];
   let recovered = false;

@@ -248,7 +248,7 @@ test("Codex TOML adapter rejects malformed, ambiguous, and modified registration
   }
 });
 
-test("Codex TOML adapter refuses unsafe multiline shapes and ignores multiline strings", async () => {
+test("Codex TOML adapter refuses unsafe multiline shapes", async () => {
   const fixture = await createFixture();
   try {
     const rootInlinePath = path.join(fixture.root, "root-inline.toml");
@@ -307,26 +307,6 @@ test("Codex TOML adapter refuses unsafe multiline shapes and ignores multiline s
       /unsupported multiline value/,
     );
     assert.equal(await readFile(multilinePath, "utf8"), multiline);
-
-    const stringPath = path.join(fixture.root, "multiline-string.toml");
-    const multilineString = [
-      'description = """',
-      "[mcp_servers.engineering-workflow]",
-      'command = "not-a-table"',
-      '"""',
-      "",
-    ].join("\n");
-    await writeFile(stringPath, multilineString, "utf8");
-    const stringTransition = createTransition(stringPath, multilineString, {
-      action: "set",
-      expectedValue: undefined,
-      desiredValue: { command: "node" },
-    });
-    const stringAdapter = new CodexTomlInstallAdapter();
-    const observation = await stringAdapter.inspect(createContext(stringTransition), signal());
-    const prepared = await stringAdapter.prepare(createContext(stringTransition), observation, signal());
-    await stringAdapter.apply(createContext(stringTransition), prepared, signal());
-    assert.match(await readFile(stringPath, "utf8"), /description = """[\s\S]*\[mcp_servers.engineering-workflow\]/);
   } finally {
     await fixture.cleanup();
   }

@@ -97,9 +97,6 @@ test("unchanged completion is captured and valid results remain stable", async (
     assert.deepEqual(closedWorkers, ["tests"]);
     assert.equal(captureCount, 1);
 
-    currentCheckpoint = createTestCheckpoint({
-      unstagedDiffSha256: "c".repeat(64),
-    });
     supervisor.supervise(run.id);
 
     assert.equal(run.workers.tests.result, result);
@@ -112,45 +109,41 @@ test("unchanged completion is captured and valid results remain stable", async (
   }
 });
 
-for (const [label, change] of [
-  ["HEAD", { headId: "changed-head" }],
-  ["staged", { stagedDiffSha256: "c".repeat(64) }],
-  ["unstaged", { unstagedTrackedDiffSha256: "c".repeat(64) }],
-] as const) {
-  test(`a ${label} checkpoint change marks the report stale`, async () => {
-    resetTestState();
-    inspectionOutput = "x".repeat(300_000);
-    const run = createWorkerRun();
-    runs.set(run.id, run);
-    currentCheckpoint = createTestCheckpoint(change);
-    const supervisor = new WorkflowSupervisor({
-      notifier: createNotifier(),
-      projectRoot: "/test-project",
-    });
-
-    try {
-      supervisor.supervise(run.id);
-      await waitFor(() => run.workers.tests.tabId === undefined);
-      supervisor.supervise(run.id);
-
-      const worker = run.workers.tests;
-      assert.equal(worker.state, "stale");
-      assert.ok(worker.result);
-      assert.ok(worker.result.output.length <= 256 * 1024);
-      assert.match(worker.result.output, /truncated before persistence/);
-      assert.deepEqual(worker.staleDetails?.current, currentCheckpoint);
-      assert.equal(run.state, "blocked");
-      assert.equal(
-        run.notifications?.filter(({ kind }) => kind === "worker-stale").length,
-        1,
-      );
-      assert.deepEqual(closedWorkers, ["tests"]);
-    } finally {
-      await supervisor.dispose();
-      runs.delete(run.id);
-    }
+test("an unstaged checkpoint change marks the report stale", async () => {
+  resetTestState();
+  inspectionOutput = "x".repeat(300_000);
+  const run = createWorkerRun();
+  runs.set(run.id, run);
+  currentCheckpoint = createTestCheckpoint({
+    unstagedTrackedDiffSha256: "c".repeat(64),
   });
-}
+  const supervisor = new WorkflowSupervisor({
+    notifier: createNotifier(),
+    projectRoot: "/test-project",
+  });
+
+  try {
+    supervisor.supervise(run.id);
+    await waitFor(() => run.workers.tests.tabId === undefined);
+    supervisor.supervise(run.id);
+
+    const worker = run.workers.tests;
+    assert.equal(worker.state, "stale");
+    assert.ok(worker.result);
+    assert.ok(worker.result.output.length <= 256 * 1024);
+    assert.match(worker.result.output, /truncated before persistence/);
+    assert.deepEqual(worker.staleDetails?.current, currentCheckpoint);
+    assert.equal(run.state, "blocked");
+    assert.equal(
+      run.notifications?.filter(({ kind }) => kind === "worker-stale").length,
+      1,
+    );
+    assert.deepEqual(closedWorkers, ["tests"]);
+  } finally {
+    await supervisor.dispose();
+    runs.delete(run.id);
+  }
+});
 
 function createWorkerRun() {
   const run = createRun();

@@ -126,6 +126,7 @@ test("write-then-throw is compensated with exact baseline bytes", async () => {
   const desired = Buffer.from([0x00, 0xfd, 0x0a, 0x42]);
   try {
     const plan = await createFilePlan(fixture, { baseline, desired });
+    const file = plan.transitions.find((transition) => transition.kind === "file")!;
     const baselineManifest = await readFile(
       resolveRelative(fixture.destination, MANIFEST_RELATIVE_PATH),
     );
@@ -143,6 +144,8 @@ test("write-then-throw is compensated with exact baseline bytes", async () => {
       executeInstallTransaction({ plan, resolveAdapter: () => adapter }),
       (error: unknown) => {
         const failure = assertTransactionFailure(error, "apply");
+        assert.match(failure.cause.message, /fault after payload write/);
+        assert.deepEqual(failure.intentTransitionIds, [file.id]);
         assert.equal(failure.rollback.complete, true);
         return true;
       },
