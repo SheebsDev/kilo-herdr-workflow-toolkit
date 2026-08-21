@@ -22,7 +22,7 @@ let saveCount = 0;
 const supervisedRuns: string[] = [];
 
 mock.module("../../core/run-store.ts", {
-  exports: {
+  namedExports: {
     createRun: () => createTestRun(),
     normalizeTaskCardPath: async () => undefined,
     listRuns: async () => [],
@@ -52,13 +52,13 @@ mock.module("../../core/run-store.ts", {
 });
 
 mock.module("../../core/source-checkpoint.ts", {
-  exports: {
+  namedExports: {
     captureSourceCheckpoint: async () => currentCheckpoint,
   },
 });
 
 mock.module("../../core/worker-service.ts", {
-  exports: {
+  namedExports: {
     closeWorker: async (
       _run: ReturnType<typeof createTestRun>,
       worker: { kind: string },
@@ -120,7 +120,7 @@ mock.module("../../core/worker-service.ts", {
 });
 
 mock.module("../../core/supervisor.ts", {
-  exports: {
+  namedExports: {
     WorkflowSupervisor: class {
       supervise(runId: string): void {
         supervisedRuns.push(runId);

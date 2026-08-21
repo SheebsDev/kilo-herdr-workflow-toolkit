@@ -15,7 +15,7 @@ let captureCount = 0;
 const closedWorkers: string[] = [];
 
 mock.module("../../core/run-store.ts", {
-  exports: {
+  namedExports: {
     listRuns: async () => [...runs.values()],
     loadRun: async (_projectRoot: string, runId: string) => {
       const run = runs.get(runId);
@@ -41,7 +41,7 @@ mock.module("../../core/run-store.ts", {
 });
 
 mock.module("../../core/source-checkpoint.ts", {
-  exports: {
+  namedExports: {
     captureSourceCheckpoint: async () => {
       captureCount += 1;
       return currentCheckpoint;
@@ -57,7 +57,7 @@ mock.module("../../core/source-checkpoint.ts", {
 });
 
 mock.module("../../core/worker-service.ts", {
-  exports: {
+  namedExports: {
     closeWorker: async (
       _run: ReturnType<typeof createRun>,
       worker: { kind: string },

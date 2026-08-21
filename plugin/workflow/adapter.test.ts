@@ -6,13 +6,13 @@ const calls: Array<{ operation: string; input?: unknown }> = [];
 let serviceConstructed = 0;
 
 mock.module("../../core/worker-service.ts", {
-  exports: {
+  namedExports: {
     requireHerdrWorkspace: () => "workspace-test",
   },
 });
 
 mock.module("../../core/workflow-service.ts", {
-  exports: {
+  namedExports: {
     WorkflowService: class {
       constructor() {
         serviceConstructed += 1;

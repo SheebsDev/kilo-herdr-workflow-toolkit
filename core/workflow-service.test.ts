@@ -28,7 +28,7 @@ let abortDuringLaunch = false;
 let abortOnSaveNewRun = false;
 
 mock.module("./run-store.ts", {
-  exports: {
+  namedExports: {
     createRun: (options: {
       context: ProjectContext;
       workerAgents: Record<string, "kilo" | "claude" | "codex">;
@@ -81,7 +81,7 @@ mock.module("./run-store.ts", {
 });
 
 mock.module("./source-checkpoint.ts", {
-  exports: {
+  namedExports: {
     captureSourceCheckpoint: async () => {
       checkpointCount += 1;
       return createTestCheckpoint();
@@ -90,7 +90,7 @@ mock.module("./source-checkpoint.ts", {
 });
 
 mock.module("./worker-profile.ts", {
-  exports: {
+  namedExports: {
     resolveWorkerAgents: (value: Record<string, string> | undefined) => ({
       tests: value?.tests ?? "kilo",
       "code-review": value?.["code-review"] ?? "kilo",
@@ -103,7 +103,7 @@ mock.module("./worker-profile.ts", {
 });
 
 mock.module("./worker-service.ts", {
-  exports: {
+  namedExports: {
     closeWorker: async (
       _run: ReturnType<typeof createFixtureRun>,
       worker: { kind: string },
@@ -157,7 +157,7 @@ mock.module("./worker-service.ts", {
 });
 
 mock.module("./supervisor.ts", {
-  exports: {
+  namedExports: {
     WorkflowSupervisor: class {
       private readonly supervised = new Set<string>();
 

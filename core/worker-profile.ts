@@ -269,6 +269,7 @@ export async function isWorkerExecutableAvailable(
   agentKind: AgentKind,
   signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   const profile = getTrustedWorkerProfile(agentKind);
   const probeExecutable =
     process.platform === "win32" ? "where.exe" : profile.executable;
@@ -293,7 +294,7 @@ export async function isWorkerExecutableAvailable(
 
     child.once("error", (error) => {
       if (signal?.aborted) {
-        reject(error);
+        reject(signal.reason);
         return;
       }
 

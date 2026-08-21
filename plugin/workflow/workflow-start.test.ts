@@ -15,7 +15,7 @@ let checkpointError: Error | undefined;
 let launchFailure: string | undefined;
 
 mock.module("../../core/run-store.ts", {
-  exports: {
+  namedExports: {
     createRun: (options: {
       workerAgents: Record<string, string>;
     }) => {
@@ -50,7 +50,7 @@ mock.module("../../core/run-store.ts", {
 });
 
 mock.module("../../core/worker-profile.ts", {
-  exports: {
+  namedExports: {
     resolveWorkerAgents: (value: unknown) => ({
       tests: (value as { tests?: string } | undefined)?.tests ?? "kilo",
       "code-review":
@@ -69,7 +69,7 @@ mock.module("../../core/worker-profile.ts", {
 });
 
 mock.module("../../core/source-checkpoint.ts", {
-  exports: {
+  namedExports: {
     captureSourceCheckpoint: async () => {
       if (checkpointError) {
         throw checkpointError;
@@ -80,7 +80,7 @@ mock.module("../../core/source-checkpoint.ts", {
 });
 
 mock.module("../../core/worker-service.ts", {
-  exports: {
+  namedExports: {
     closeWorker: async (
       _run: ReturnType<typeof createTestRun>,
       worker: { kind: string },
@@ -129,7 +129,7 @@ mock.module("../../core/worker-service.ts", {
 });
 
 mock.module("../../core/supervisor.ts", {
-  exports: {
+  namedExports: {
     WorkflowSupervisor: class {
       supervise(): void {}
       cancelWorker(): void {}
