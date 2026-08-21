@@ -350,9 +350,16 @@ export class FileSystemInstallAdapter implements InstallTransitionAdapter {
     if (isPathInside(checkoutRealPath, temporaryRealPath)) {
       throw new Error("Install transaction storage must be outside checkout content.");
     }
+    const temporaryRootInsideTransitionTarget = await isInsideTransitionTarget(
+      context.plan,
+      temporaryRealPath,
+    );
     for (const resourceRoot of context.plan.resourceRoots) {
       const resourceRealPath = await realpath(resourceRoot);
       if (isPathInside(resourceRealPath, temporaryRealPath)) {
+        const isBroadUserRoot = context.plan.scope === "user" &&
+          samePath(resourceRoot, context.plan.destinationRoot);
+        if (isBroadUserRoot && !temporaryRootInsideTransitionTarget) continue;
         throw new Error("Install transaction storage must be outside live resource roots.");
       }
     }
@@ -1108,6 +1115,27 @@ function resolveTargetPath(transition: InstallTransition): string {
     transition.target.root,
     ...transition.target.relativePath.split("/"),
   );
+}
+
+async function isInsideTransitionTarget(
+  plan: TransitionAdapterContext["plan"],
+  candidatePath: string,
+): Promise<boolean> {
+  const realRoots = new Map<string, string>();
+  for (const transition of plan.transitions) {
+    const rootKey = nativeKey(transition.target.root);
+    let rootRealPath = realRoots.get(rootKey);
+    if (!rootRealPath) {
+      rootRealPath = await realpath(transition.target.root);
+      realRoots.set(rootKey, rootRealPath);
+    }
+    const targetPath = path.resolve(
+      rootRealPath,
+      ...transition.target.relativePath.split("/"),
+    );
+    if (isPathInside(targetPath, candidatePath)) return true;
+  }
+  return false;
 }
 
 function siblingPath(targetPath: string, purpose: string): string {

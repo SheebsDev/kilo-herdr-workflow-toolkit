@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -85,6 +86,33 @@ test("Kilo-only default uses the injected external registration and creates no o
     assert.equal(external.values.has("KILO_CONFIG_DIR"), false);
     assert.equal(await exists(resolveOwnershipPaths("user", home).manifestPath), false);
     assert.equal(await readFile(path.join(home, ".workflow", "sentinel"), "utf8"), "keep\n");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("user installs can stage in an OS temp directory inside the home root", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "user-install-home-temp-"));
+  const temporaryRoot = path.join(home, "AppData", "Local", "Temp");
+  const external = new MemoryExternalRegistrationBackend();
+  try {
+    await mkdir(temporaryRoot, { recursive: true });
+    await executeUserScopeInstallOperation({
+      checkoutRoot: CHECKOUT_ROOT,
+      homeRoot: home,
+      skipDependencies: true,
+      preflightBackend: passingPreflight(),
+      externalRegistrationBackend: external,
+      filesystemOptions: { temporaryRoot },
+      projectedAt: PROJECTED_AT,
+    });
+
+    assert.equal(external.values.get("KILO_CONFIG_DIR"), CHECKOUT_ROOT);
+    assert.deepEqual(await readdir(temporaryRoot), []);
+    assert.equal(
+      readOwnershipManifest(resolveOwnershipPaths("user", home).manifestPath, { root: home }).scope,
+      "user",
+    );
   } finally {
     await rm(home, { recursive: true, force: true });
   }
