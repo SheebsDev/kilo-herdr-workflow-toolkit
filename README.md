@@ -1,164 +1,345 @@
 # Kilo Herdr Engineering Workflow
 
-A portable Kilo configuration package in which a Kilo coordinator runs three
-independent Herdr review workers:
+This checkout provides one durable engineering-verification workflow for Kilo
+Code, Claude Code, and Codex coordinators running inside Herdr. All three
+coordinators use the same host-neutral workflow service and the same five
+operations. Claude Code and Codex access it through one local stdio MCP server;
+Kilo uses the thin plugin adapter.
 
-- test and build verification
-- engineering code review
-- human readability review
+The default workflow starts three independent workers:
 
-The Kilo coordinator receives durable completion notifications, evaluates
-findings, fixes accepted blocking issues, and can retry only the affected
-reviewer. The trusted worker profiles cover Kilo, Claude Code, and Codex;
-the current no-map `workflow_start` path launches Kilo workers by default.
+- `tests`: test and build verification
+- `code-review`: engineering correctness review
+- `readability`: human readability and maintainability review
 
-## What This Solves
+Workers may use Kilo, Claude, or Codex independently. There is no
+harness-specific orchestration logic and no divergent procedure copy.
 
-This workflow lets multiple independent reviews run simultaneously inside Herdr
-while still allowing an engineer to redirect or directly cancel any reviewer.
-The result is a more readable, durable process for producing pull requests and
-commits, helping engineers stay connected to the code as codebases grow.
+## Coordinator Matrix
 
-## Workflow
+| Coordinator | Entry point | Automatic wake | Worker kinds |
+| --- | --- | --- | --- |
+| Kilo | Kilo plugin and `/implement-task` | Exact originating Herdr pane | Kilo, Claude, Codex |
+| Claude Code | Local `engineering-workflow` stdio MCP server | Exact originating Herdr pane | Kilo, Claude, Codex |
+| Codex | Local `engineering-workflow` stdio MCP server | Exact originating Herdr pane | Kilo, Claude, Codex |
 
-The full engineering cycle is:
+The public operations are exactly:
 
-1. **Plan** the work and define the intended outcome.
-2. Use the **task-planning skill** to turn the plan into small, ordered Task Cards with acceptance criteria and verification requirements.
-3. Run **`/implement-task`** for each Task Card or a set of cards. At a stable implementation checkpoint, the Kilo coordinator starts parallel test, code, and readability reviews in Herdr.
+1. `workflow_start`: start all three review roles after a stable implementation checkpoint.
+2. `workflow_status`: inspect live or durable state and collected reports.
+3. `workflow_send`: send a targeted instruction to an existing worker.
+4. `workflow_stop`: terminate one worker when explicitly requested.
+5. `workflow_retry`: replace a failed, stopped, stale, or unsatisfactory worker.
 
-Reviewers report durable results, can be redirected or cancelled directly, and affected reviewers can be retried without restarting the entire workflow.
-
-## Included
-
-- `/implement-task` Kilo coordinator command
-- `workflow_start`, `workflow_status`, `workflow_send`, `workflow_stop`, and `workflow_retry` tools
-- Herdr-to-Kilo agent-state integration
-- Windows long-prompt launcher shim for Kilo workers
-- code review, readability review, test verification, and task planning skills
-- Windows and Unix registration scripts
-- GitHub Actions verification on Windows and Linux
-
-The repository intentionally excludes model/provider configuration, credentials, broad permissions, workflow run data, `node_modules`, and project-specific skills.
+`workflow_start` accepts an optional `workerAgents` map with the fixed keys
+`tests`, `code-review`, and `readability`. Omitted keys default to `kilo`.
+The selected worker kind, skill snapshot, capability profile, and enforcement
+are persisted with the run. Test workers can write generated artifacts;
+review workers use Claude plan mode or Codex read-only mode where supported.
+Kilo review enforcement is prompt/checkpoint based and does not guarantee
+that Kilo cannot write files.
 
 ## Requirements
 
-- Kilo Code compatible with `@kilocode/plugin` 7.4.20
-- Herdr CLI available as `herdr`
-- Node.js 22.22.2 or newer and npm
+Every coordinator and worker process must be launched in a Herdr workspace.
+Install and authenticate the host tools separately; this repository does not
+install provider credentials or broaden permissions.
+
+Required for every installation and coordinator:
+
 - Git
+- Node.js 22.22.2 or newer and npm
+- the `herdr` CLI
+- a Kilo, Claude Code, or Codex client for the selected coordinator
+- local stdio MCP support for Claude Code or Codex coordinators
 
-The parallel workflow must be started from a Kilo session running inside Herdr. Ordinary Kilo sessions can load the package, but `workflow_start` will reject launches without Herdr's workspace environment.
+Additional harness requirements:
 
-## Worker Harnesses
+- Kilo: Kilo Code with `@kilocode/plugin` 7.4.20 compatibility and the `kilo` command on PATH
+- Claude: the `claude` command, installable with `npm install -g @anthropic-ai/claude-code`
+- Codex: the `codex` command, installable with `npm install -g @openai/codex`
+- Claude or Codex workers: a current Herdr integration
 
-Phase 1 defines `kilo`, `claude`, and `codex` as trusted worker harnesses. Kilo
-is the only supported coordinator. `workflow_start` accepts an optional
-`workerAgents` map with fixed `tests`, `code-review`, and `readability` keys;
-omitted keys default to Kilo. The selected harness and its enforcement profile
-are snapshotted in the run definition.
-
-When Claude Code or Codex worker selection is enabled, those workers require
-their executable and corresponding Herdr integration. Install missing
-prerequisites explicitly; the workflow does not install them automatically.
-For example:
+Install the non-Kilo Herdr integrations explicitly when needed:
 
 ```text
 herdr integration install claude
 herdr integration install codex
 ```
 
-Review-only workers use no-write modes where the harness supports them:
+The installer preflights selected CLIs, Node, npm and checkout dependencies,
+Herdr, and the selected Claude/Codex integrations before mutating a
+destination. Use `--skip-dependencies` or `-SkipDependencies` only when the
+checkout dependencies are already available. A project install may also
+require the selected harness to trust the project before its MCP or skill
+configuration is loaded.
 
-- Claude Code uses plan mode.
-- Codex uses a read-only sandbox without approval escalation.
-- Kilo uses prompt and tracked-source-checkpoint enforcement. This is weaker
-  enforcement and does not guarantee that Kilo cannot write files.
+## Workflow Runtime
 
-Test verification workers retain the permissions needed to run checks and
-write generated artifacts. Status output identifies each worker harness and
-its enforcement strength.
+Start `/implement-task` or `workflow_start` only after implementation files
+are at a stable checkpoint. Reports and notifications are persisted under the
+target project's `.workflow/runs/` directory.
 
-If tracked source changes during a worker attempt, the captured report is
-marked `stale`. It remains diagnostic evidence, does not count toward review
-completion, and requires `workflow_retry` to capture a fresh checkpoint and
-rerun that worker.
+The active host owns in-memory supervision. Closing Kilo, Claude Code, or
+Codex pauses watches without losing run state or the durable notification
+outbox. Restart recovery is allowed only for the same coordinator kind, exact
+Herdr pane, workspace, and canonical project root. A Kilo session ID is an
+additional recovery constraint when present.
 
-## Install On Windows
+Wakes are sent through `herdr agent prompt` to the exact recorded pane after
+Herdr validates its pane ID, workspace, project path, and coordinator kind.
+They are generated for blocked, failed, stale, and completed review states.
+If the pane is missing or validation/delivery fails, the notification remains
+pending and its delivery error is visible through status. It is never redirected
+to the newest agent or another pane with a similar cwd. Delivery retries are
+bounded.
+
+A new pane may inspect a known run by passing its `runId` to
+`workflow_status`, but it cannot claim the run, start its watches, mutate it,
+or receive its wakes. There is no daemon, remote MCP transport, or supervision
+while every coordinator process is closed.
+
+The MCP adapter obtains the project from the trusted host. It uses
+`CLAUDE_PROJECT_DIR` when provided and otherwise resolves the MCP cwd to its
+containing Git root; both must resolve to the same repository. The tool caller
+cannot supply an arbitrary project path. MCP startup also requires inherited
+`HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_WORKSPACE_ID`, and
+`WORKFLOW_COORDINATOR_KIND` (`kilo`, `claude`, or `codex`).
+
+## Install Selection
+
+The installers accept `kilo`, `claude`, `codex`, or `all`. Selections are
+opt-in and repeatable. Omitting `--harness` or `-Harness` preserves the
+historical Kilo-only default. `all` expands to Kilo, Claude, and Codex.
+Unix accepts `global` as a compatibility alias for user scope; Windows accepts
+`Global` as the same alias.
+
+Installation runs `npm ci` and `npm test` by default. Add the documented skip
+flags only for an already prepared checkout. `--update` or `-Update` repeats
+the same preflight and ownership transaction for an existing installation.
+
+### Windows User Scope
+
+Run these from the checkout. Each command is an independently supported,
+copy-pastable harness selection:
 
 ```powershell
-git clone <repository-url>
-Set-Location kilo-herdr-engineering-workflow
-.\scripts\install.ps1
+.\scripts\install.ps1 -Scope User -Harness kilo
+.\scripts\install.ps1 -Scope User -Harness claude
+.\scripts\install.ps1 -Scope User -Harness codex
+.\scripts\install.ps1 -Scope User -Harness all
 ```
 
-The installer runs `npm ci`, runs the unit tests, and sets the user-level `KILO_CONFIG_DIR` to this checkout. Start a new terminal after installation.
-
-Global scope is the default and can also be selected explicitly with `-Scope Global`.
-
-## Install On macOS Or Linux
-
-```bash
-git clone <repository-url>
-cd kilo-herdr-engineering-workflow
-sh ./scripts/install.sh
-```
-
-The installer runs `npm ci`, runs the unit tests, and adds a marked `KILO_CONFIG_DIR` block to the appropriate shell profile. Start a new shell after installation.
-
-Use `--profile /path/to/profile` when automatic profile selection is not suitable.
-
-Global scope is the default and can also be selected explicitly with `--scope global`.
-
-## Install For One Project
-
-Project scope installs the workflow into the target project's `.kilo` directory. It does not set `KILO_CONFIG_DIR` or modify a shell profile.
-
-Windows:
+### Windows Project Scope
 
 ```powershell
-.\scripts\install.ps1 -Scope Project -ProjectPath C:\path\to\project
+$project = 'C:\Work\Project'
+.\scripts\install.ps1 -Scope Project -ProjectPath $project -Harness kilo
+.\scripts\install.ps1 -Scope Project -ProjectPath $project -Harness claude
+.\scripts\install.ps1 -Scope Project -ProjectPath $project -Harness codex
+.\scripts\install.ps1 -Scope Project -ProjectPath $project -Harness all
 ```
 
-macOS or Linux:
+### Unix User Scope
+
+Run these from the checkout. `--scope global` may be used instead of
+`--scope user`:
 
 ```bash
-sh ./scripts/install.sh --scope project --project /path/to/project
+sh ./scripts/install.sh --scope user --harness kilo
+sh ./scripts/install.sh --scope user --harness claude
+sh ./scripts/install.sh --scope user --harness codex
+sh ./scripts/install.sh --scope user --harness all
 ```
 
-Project installation runs `npm ci` in a staging directory and copies the plugin dependency into the project's `.kilo/node_modules`. Use `-SkipDependencies` or `--skip-dependencies` only when that dependency is already resolvable there.
+The user Kilo registration is added to the selected shell profile, or to the
+profile passed with `--profile PATH`. Start a new shell after installation.
 
-Project installation refuses to proceed when the global workflow plugin is already active, because Kilo would load duplicate workflow tools. Remove the global installation before installing the project-scoped copy.
+### Unix Project Scope
+
+```bash
+project=/work/project
+sh ./scripts/install.sh --scope project --project "$project" --harness kilo
+sh ./scripts/install.sh --scope project --project "$project" --harness claude
+sh ./scripts/install.sh --scope project --project "$project" --harness codex
+sh ./scripts/install.sh --scope project --project "$project" --harness all
+```
+
+Project installs do not set `KILO_CONFIG_DIR` or modify a shell profile. They
+can be launched from a project subdirectory: the copied MCP bootstrap walks up
+to the project toolkit. The installer still receives the project root through
+`-ProjectPath` or `--project`.
+
+### Update And Force
+
+Updates are ordinary ownership-aware transactions:
+
+#### Windows Update
+
+```powershell
+.\scripts\install.ps1 -Scope User -Harness kilo -Update
+.\scripts\install.ps1 -Scope User -Harness claude -Update
+.\scripts\install.ps1 -Scope User -Harness codex -Update
+.\scripts\install.ps1 -Scope User -Harness all -Update
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness kilo -Update
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness claude -Update
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness codex -Update
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness all -Update
+```
+
+The same supported selections can explicitly force a safe displaced-value
+replacement:
+
+#### Windows Force Replacement
+
+```powershell
+.\scripts\install.ps1 -Scope User -Harness kilo -Update -Force
+.\scripts\install.ps1 -Scope User -Harness claude -Update -Force
+.\scripts\install.ps1 -Scope User -Harness codex -Update -Force
+.\scripts\install.ps1 -Scope User -Harness all -Update -Force
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness kilo -Update -Force
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness claude -Update -Force
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness codex -Update -Force
+.\scripts\install.ps1 -Scope Project -ProjectPath C:\Work\Project -Harness all -Update -Force
+```
+
+#### Unix Update
+
+```bash
+sh ./scripts/install.sh --scope user --harness kilo --update
+sh ./scripts/install.sh --scope user --harness claude --update
+sh ./scripts/install.sh --scope user --harness codex --update
+sh ./scripts/install.sh --scope user --harness all --update
+sh ./scripts/install.sh --scope project --project /work/project --harness kilo --update
+sh ./scripts/install.sh --scope project --project /work/project --harness claude --update
+sh ./scripts/install.sh --scope project --project /work/project --harness codex --update
+sh ./scripts/install.sh --scope project --project /work/project --harness all --update
+```
+
+#### Unix Force Replacement
+
+```bash
+sh ./scripts/install.sh --scope user --harness kilo --update --force
+sh ./scripts/install.sh --scope user --harness claude --update --force
+sh ./scripts/install.sh --scope user --harness codex --update --force
+sh ./scripts/install.sh --scope user --harness all --update --force
+sh ./scripts/install.sh --scope project --project /work/project --harness kilo --update --force
+sh ./scripts/install.sh --scope project --project /work/project --harness claude --update --force
+sh ./scripts/install.sh --scope project --project /work/project --harness codex --update --force
+sh ./scripts/install.sh --scope project --project /work/project --harness all --update --force
+```
+
+`--force` and `-Force` are explicit. They do not make arbitrary payload or
+dependency conflicts safe. Force replacement is allowed only when the
+transaction can retain exact displaced configuration for restoration.
+
+## Payload Locations
+
+User scope is checkout-backed. Kilo registers the checkout through
+`KILO_CONFIG_DIR` on Windows or a marked Unix profile block. Claude and Codex
+registrations point to the checkout's `mcp/server.ts`; no second runtime copy
+is created. User payloads and registration targets are:
+
+| Harness | MCP/config registration | Skills |
+| --- | --- | --- |
+| Kilo | `KILO_CONFIG_DIR` points to the checkout | Skills are available from the checkout |
+| Claude | `~/.claude.json`, key `mcpServers.engineering-workflow` | `~/.claude/skills/` |
+| Codex | `~/.codex/config.toml`, table `mcp_servers.engineering-workflow` | `~/.agents/skills/` |
+
+Project scope is self-contained under the project and does not depend on the
+checkout after installation:
+
+- shared runtime, MCP server, launcher, skills, package metadata, and copied dependencies: `.agents/toolkits/kilo-herdr-engineering-workflow/`
+- Kilo thin plugin and command: `.kilo/plugin/` and `.kilo/command/`
+- Claude skills and project MCP registration: `.claude/skills/` and `.mcp.json`
+- Codex skills and project MCP registration: `.agents/skills/` and `.codex/config.toml`
+
+The project MCP registration uses a bootstrap that locates the copied toolkit
+from the current directory or any descendant. Project-local skills take
+precedence over user skills according to the harness's normal discovery rules;
+the project Kilo payload must not be combined with an active global Kilo copy.
+
+Ownership metadata is separate from workflow history. User manifests live at
+`~/.config/kilo-herdr-engineering-workflow/ownership.json`; project manifests
+live at `.agents/toolkits/kilo-herdr-engineering-workflow/ownership.json`.
+Project displaced configuration values are stored in a private restore-data
+root outside the project. Never put that restore data inside the project.
+
+## Conflicts And Uninstall Safety
+
+All selected harnesses are preflighted before any destination is mutated. The
+transaction refuses invalid JSON/TOML, missing prerequisites, unsafe paths,
+symlinks, duplicate Kilo discovery, and unowned payload conflicts. Claude
+merges only `mcpServers.engineering-workflow`; Codex edits only the named
+`mcp_servers.engineering-workflow` table while preserving unrelated keys,
+comments, and content.
+
+The ownership manifest records harnesses, copied-file hashes, registrations,
+inserted profile blocks, dependencies, and displaced values. On update or
+uninstall:
+
+- unchanged owned files and registrations may be replaced or removed;
+- modified owned files, dependencies, registrations, and concurrent edits are retained with warnings;
+- shared files remain when another selected installation still owns them;
+- an unchanged installed registration can restore its exact displaced value;
+- missing or unsafe restore data is retained and reported;
+- a moved checkout or Node executable requires reinstalling the checkout-backed registration;
+- the Phase 1 TSV project manifest is refused rather than guessed into the new contract;
+- `.workflow` history and unrelated user or project harness configuration are never removed.
+
+### Windows User Uninstall
+
+```powershell
+.\scripts\uninstall.ps1 -Scope User -Harness kilo
+.\scripts\uninstall.ps1 -Scope User -Harness claude
+.\scripts\uninstall.ps1 -Scope User -Harness codex
+.\scripts\uninstall.ps1 -Scope User -Harness all
+```
+
+### Windows Project Uninstall
+
+```powershell
+$project = 'C:\Work\Project'
+.\scripts\uninstall.ps1 -Scope Project -ProjectPath $project -Harness kilo
+.\scripts\uninstall.ps1 -Scope Project -ProjectPath $project -Harness claude
+.\scripts\uninstall.ps1 -Scope Project -ProjectPath $project -Harness codex
+.\scripts\uninstall.ps1 -Scope Project -ProjectPath $project -Harness all
+```
+
+### Unix User Uninstall
+
+```bash
+sh ./scripts/uninstall.sh --scope user --harness kilo
+sh ./scripts/uninstall.sh --scope user --harness claude
+sh ./scripts/uninstall.sh --scope user --harness codex
+sh ./scripts/uninstall.sh --scope user --harness all
+```
+
+### Unix Project Uninstall
+
+```bash
+project=/work/project
+sh ./scripts/uninstall.sh --scope project --project "$project" --harness kilo
+sh ./scripts/uninstall.sh --scope project --project "$project" --harness claude
+sh ./scripts/uninstall.sh --scope project --project "$project" --harness codex
+sh ./scripts/uninstall.sh --scope project --project "$project" --harness all
+```
+
+Omitting the harness preserves the Kilo-only uninstall default. Use the same
+scope, project path, and private restore root used for installation when those
+values were customized.
 
 ## Existing Kilo Configuration
 
-Kilo deep-merges this additional configuration directory with normal global and project configuration. Global installation does not modify `~/.config/kilo`, `~/.kilo`, project `.kilo` files, or provider credentials. Project installation intentionally writes its payload to the selected project's `.kilo` directory after checking for conflicts.
+Global Kilo installation registers this checkout and does not copy over
+`~/.config/kilo`, `~/.kilo`, provider credentials, or project `.kilo` content.
+Project installation writes only its owned `.kilo` payload after preflight.
+Resolve an existing `KILO_CONFIG_DIR` pointing elsewhere or an existing
+workflow plugin under supported Kilo roots before installing Kilo; otherwise
+the installer refuses duplicate tool discovery. `--force` is not a substitute
+for deciding which Kilo installation should remain active.
 
-Installation stops when either of these could cause an ambiguous setup:
-
-- `KILO_CONFIG_DIR` already points somewhere else
-- a workflow plugin exists in the supported global `plugin/` or `plugins/` directories under `~/.config/kilo`, `~/.kilo`, or `~/.kilocode`
-
-Resolve or intentionally migrate that setup before using `-Force` on Windows or `--force` on Unix. Loading two copies of the workflow plugin can register duplicate tool names.
-
-## Use
-
-Launch Kilo inside a Herdr workspace, then invoke:
-
-```text
-/implement-task path/to/TASK-001.md
-```
-
-The command tells the implementation agent to reach a stable checkpoint and call `workflow_start`. Herdr opens three unfocused worker tabs. Completed reports are persisted under the target project's `.workflow/runs/` directory before worker tabs are closed.
-
-The workflow also supports direct tool-driven control:
-
-- inspect current state with `workflow_status`
-- redirect a worker with `workflow_send`
-- terminate a worker with `workflow_stop`
-- restart an affected worker with `workflow_retry`
-
-## Update
+## Update The Checkout
 
 ```bash
 git pull
@@ -166,55 +347,24 @@ npm ci
 npm test
 ```
 
-The checkout path remains registered, so no reinstall is needed unless the repository moves.
+User registrations are checkout-backed, so updating the checkout is enough
+when its path has not changed. If the checkout moves, reinstall the affected
+user harnesses so the stored MCP or `KILO_CONFIG_DIR` value points to the new
+absolute path. Project installations are self-contained and should be updated
+with the project-scoped installer.
 
-## Uninstall
+## Validation
 
-Windows:
+`npm test` runs the runtime, MCP, adapter, ownership, transaction, and
+installer suites. `npm run test:installer` runs the focused Windows/Unix
+wrapper matrix. The matrix uses temporary checkout, home, project, profile,
+environment, and restore roots and covers Kilo, Claude, Codex, and `all` for
+both scopes, repeated update, clean uninstall, conflicts, force replacement,
+modified content, malformed configuration, rollback, displaced restoration,
+project subdirectories, concurrent edits, symlinks, and paths with spaces.
 
-```powershell
-.\scripts\uninstall.ps1
-```
-
-macOS or Linux:
-
-```bash
-sh ./scripts/uninstall.sh
-```
-
-For a project-scoped installation, pass the same project path:
-
-```powershell
-.\scripts\uninstall.ps1 -Scope Project -ProjectPath C:\path\to\project
-```
-
-```bash
-sh ./scripts/uninstall.sh --scope project --project /path/to/project
-```
-
-Global uninstall removes only the registration created by the installer. Project uninstall removes only unchanged files recorded by its project manifest. Neither mode deletes existing Kilo configuration or workflow history in other projects.
-
-## Validation Matrix
-
-`npm test` includes the runtime, MCP, adapter, ownership, transaction, and
-installer suites. `npm run test:installer` additionally runs the focused
-cross-platform wrapper matrix. Both commands are required by the Windows and
-Linux GitHub Actions jobs.
-
-The matrix uses temporary checkout, home, project, profile, environment, and
-private-restore roots. It covers Kilo, Claude, Codex, and `all` for user and
-project scope, repeated update, and clean uninstall. Existing installer tests
-cover malformed JSON/TOML, unsafe paths and symlinks, trust and prerequisite
-failures, conflicts and force replacement, modified content, concurrent edits,
-rollback residuals, displaced restoration, project subdirectories, and paths
-containing spaces. The tests never use a developer harness configuration or
-`.workflow` history outside their temporary fixture.
-
-### Manual Herdr Smoke Status
-
-Automated CI deliberately does not install or invoke real Claude, Codex, Kilo,
-or Herdr integrations. A real coordinator smoke run must be performed from a
-Kilo session inside Herdr and recorded with the available coordinator harnesses
-and mixed worker selections. This checkout's validation run was not inside a
-Herdr pane, so no real-harness result is claimed here; the exact limitation is
-the missing trusted Herdr session context, not a skipped protocol test.
+Automated tests use fake preflight and Herdr backends. They do not install or
+invoke real Kilo, Claude, Codex, or Herdr integrations. A real coordinator
+smoke test must therefore be run manually from each available coordinator in
+Herdr; no real-harness result is claimed by this checkout unless recorded
+separately.
