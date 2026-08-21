@@ -22,6 +22,7 @@ import type {
 import {
   FileSystemInstallAdapter,
 } from "./filesystem-install-adapter.ts";
+import { InsertedBlockInstallAdapter } from "./inserted-block-install-adapter.ts";
 import type {
   FileSystemInstallAdapterOptions,
 } from "./filesystem-install-adapter.ts";
@@ -32,6 +33,7 @@ import {
 } from "./install-plan.ts";
 import type {
   InstallConfigTarget,
+  InstallInsertedBlockTarget,
   InstallOperation,
   InstallPlan,
   InstallPreflightBackend,
@@ -71,6 +73,8 @@ export interface UserScopeInstallRequest {
   readonly skipDependencies?: boolean;
   readonly nodeExecutable?: string;
   readonly configPaths?: UserScopeConfigPaths;
+  /** Absolute Unix shell profile path used for Kilo registration. */
+  readonly profilePath?: string;
   readonly preflightBackend?: InstallPreflightBackend;
   readonly externalRegistrationBackend?: ExternalRegistrationBackend;
   readonly filesystemOptions?: FileSystemInstallAdapterOptions;
@@ -116,7 +120,10 @@ export async function buildUserScopeExecutablePlan(
     throw new Error(`Private restore data exists without an ownership manifest: ${ownershipPaths.restoreDataPath}`);
   }
 
-  const externalRegistrationTargets = harnesses.includes("kilo")
+  const profilePath = request.profilePath
+    ? canonicalProfilePath(request.profilePath, homeRoot)
+    : undefined;
+  const externalRegistrationTargets = harnesses.includes("kilo") && !profilePath
     ? [{
         harness: "kilo" as const,
         path: USER_KILO_REGISTRATION_PATH,
@@ -130,6 +137,14 @@ export async function buildUserScopeExecutablePlan(
     );
   }
 
+  const insertedBlockTargets: InstallInsertedBlockTarget[] = profilePath && harnesses.includes("kilo")
+    ? [{
+        harness: "kilo",
+        path: relativePathWithin(homeRoot, profilePath),
+        marker: PROFILE_MARKER,
+        block: buildProfileBlock(checkoutRoot, profilePath),
+      }]
+    : [];
   const configTargets = buildConfigTargets(
     harnesses,
     checkoutRoot,
@@ -154,6 +169,7 @@ export async function buildUserScopeExecutablePlan(
     existingManifest: manifest,
     existingRestoreData: restoreData,
     configTargets,
+    insertedBlockTargets,
     externalRegistrationTargets,
     force: request.force,
     skipDependencies: request.skipDependencies,
@@ -192,6 +208,7 @@ export async function executeUserScopeInstallOperation(
       filesystem,
       claude,
       codex,
+      insertedBlock: new InsertedBlockInstallAdapter(),
       external,
     }),
   });
@@ -335,6 +352,7 @@ function resolveAdapter(
     filesystem: FileSystemInstallAdapter;
     claude: ClaudeJsonInstallAdapter;
     codex: CodexTomlInstallAdapter;
+    insertedBlock: InsertedBlockInstallAdapter;
     external?: ExternalRegistrationInstallAdapter;
   },
 ) {
@@ -347,11 +365,39 @@ function resolveAdapter(
   if (context.transition.kind === "opaque-registration") {
     if (context.transition.stage.adapterKind === "claude-json") return adapters.claude;
     if (context.transition.stage.adapterKind === "codex-toml") return adapters.codex;
+    if (context.transition.stage.adapterKind === "inserted-block") return adapters.insertedBlock;
     throw new Error(
       `User-scope composition has no adapter for ${context.transition.stage.adapterKind}.`,
     );
   }
   return adapters.filesystem;
+}
+
+const PROFILE_MARKER = "kilo-herdr-engineering-workflow";
+
+function buildProfileBlock(checkoutRoot: string, profilePath: string): string {
+  if (/[\u0000-\u001f\u007f]/.test(checkoutRoot)) {
+    throw new Error("Checkout root cannot contain shell control characters.");
+  }
+  const escaped = checkoutRoot.replaceAll("'", "'\\''");
+  let prefix = "";
+  if (existsSync(profilePath)) {
+    const content = readFileSync(profilePath, "utf8");
+    if (content.length > 0) prefix = "\n";
+  }
+  return prefix + [
+    "# >>> kilo-herdr-engineering-workflow >>>",
+    `export KILO_CONFIG_DIR='${escaped}'`,
+    "# <<< kilo-herdr-engineering-workflow <<<",
+    "",
+  ].join("\n");
+}
+
+function canonicalProfilePath(value: string, homeRoot: string): string {
+  const resolved = path.resolve(value);
+  const relative = path.relative(homeRoot, resolved).split(path.sep).join("/");
+  validateSafeRelativePath(relative, homeRoot);
+  return resolved;
 }
 
 function canonicalDirectory(value: string, label: string): string {

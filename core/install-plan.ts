@@ -215,6 +215,14 @@ export interface InstallConfigTarget {
   readonly trustRequired?: boolean;
 }
 
+export interface InstallInsertedBlockTarget {
+  readonly harness: AgentKind;
+  /** Path relative to destinationRoot. */
+  readonly path: string;
+  readonly marker: string;
+  readonly block: string;
+}
+
 export interface InstallExternalRegistrationTarget {
   readonly harness: AgentKind;
   /** Logical resource path relative to destinationRoot; no file is created here. */
@@ -292,6 +300,7 @@ export interface InstallPlanRequest {
   readonly existingManifest?: OwnershipManifest;
   readonly existingRestoreData?: RestoreData;
   readonly configTargets?: readonly InstallConfigTarget[];
+  readonly insertedBlockTargets?: readonly InstallInsertedBlockTarget[];
   readonly externalRegistrationTargets?: readonly InstallExternalRegistrationTarget[];
   readonly dependencyTargets?: readonly InstallDependencyTarget[];
   readonly trustTargets?: readonly InstallTrustTarget[];
@@ -452,6 +461,20 @@ export async function buildInstallPlan(
 
     await planConfigChanges(
       request.configTargets ?? [],
+      harnesses,
+      destinationRoot,
+      manifest,
+      request.force === true,
+      backend,
+      destinationPreconditions,
+      preconditionByPath,
+      ownedChanges,
+      rollbackInputs,
+      warnings,
+    );
+
+    await planInsertedBlockChanges(
+      request.insertedBlockTargets ?? [],
       harnesses,
       destinationRoot,
       manifest,
@@ -1105,6 +1128,102 @@ async function planConfigChanges(
       desiredValue: target.installedValue,
       semanticKey: target.key,
       adapterKind: target.format === "json" ? "claude-json" : "codex-toml",
+      ownershipState: state,
+      warning,
+    });
+  }
+}
+
+async function planInsertedBlockChanges(
+  targets: readonly InstallInsertedBlockTarget[],
+  harnesses: readonly AgentKind[],
+  destinationRoot: string,
+  manifest: OwnershipManifest | undefined,
+  force: boolean,
+  backend: InstallPreflightBackend,
+  destinationPreconditions: DestinationPrecondition[],
+  preconditionByPath: Map<string, DestinationPrecondition>,
+  ownedChanges: PlannedOwnedChange[],
+  rollbackInputs: RollbackInput[],
+  warnings: InstallWarning[],
+): Promise<void> {
+  for (const target of targets) {
+    if (!harnesses.includes(target.harness)) continue;
+    const relativePath = normalizeDestinationPath(target.path);
+    if (!target.marker || /[\u0000-\u001f\u007f]/.test(target.marker)) {
+      throw new InstallPreflightError([`Inserted block ${relativePath} has an invalid marker.`]);
+    }
+    if (!target.block) {
+      throw new InstallPreflightError([`Inserted block ${relativePath} has no content.`]);
+    }
+    const destinationPath = resolveDestination(destinationRoot, relativePath);
+    const snapshot = await readDestination(backend, destinationPath);
+    if (snapshot.exists && snapshot.kind !== "file") {
+      throw new InstallPreflightError([`Inserted block destination is not a file: ${destinationPath}.`]);
+    }
+    const currentBlock = snapshot.content === undefined
+      ? undefined
+      : findMarkedBlock(snapshot.content, target.marker);
+    const record = manifest?.insertedBlocks.find(
+      (candidate) => candidate.path === relativePath && candidate.marker === target.marker,
+    );
+    const state: PlannedOwnershipState = !record
+      ? "unrelated"
+      : !snapshot.exists || currentBlock === undefined
+        ? "owned-missing"
+        : hashOwnedValue(currentBlock) === record.blockSha256
+          ? "owned-unchanged"
+          : "owned-modified";
+
+    addFilePrecondition(
+      destinationRoot,
+      relativePath,
+      snapshot,
+      state,
+      snapshot.sha256,
+      manifest,
+      destinationPreconditions,
+      preconditionByPath,
+    );
+
+    let action: PlannedChangeAction;
+    let warning: string | undefined;
+    if (currentBlock === target.block) {
+      action = record ? "unchanged" : "replace";
+    } else if (state === "owned-modified" && !force) {
+      action = "preserve";
+      warning = `Owned profile block was modified and will be retained: ${destinationPath}.`;
+      warnings.push({ code: "modified-owned-content", path: destinationPath, message: warning });
+    } else if (record && state === "owned-missing") {
+      action = "create";
+    } else if (!record && currentBlock !== undefined) {
+      throw new InstallPreflightError([
+        `Inserted block conflict at ${destinationPath}#${target.marker}. Re-run only after removing the existing block; an unowned block cannot be safely replaced.`,
+      ]);
+    } else {
+      action = currentBlock === undefined ? "create" : "replace";
+    }
+
+    if (action === "create" || action === "replace") {
+      rollbackInputs.push({
+        type: "inserted-block",
+        path: destinationPath,
+        existed: snapshot.exists,
+        sha256: snapshot.sha256,
+        content: snapshot.content,
+      });
+    }
+    ownedChanges.push({
+      id: `block-${hashText(`${target.harness}:${relativePath}:${target.marker}`)}`,
+      artifactType: "inserted-block",
+      harnesses: [target.harness],
+      destinationPath,
+      destinationRelativePath: relativePath,
+      action,
+      sha256: hashOwnedValue(target.block),
+      desiredValue: target.block,
+      semanticKey: target.marker,
+      adapterKind: "inserted-block",
       ownershipState: state,
       warning,
     });
@@ -2430,6 +2549,36 @@ function normalizeDestinationPath(value: string): string {
   const normalized = value.replaceAll("\\", "/");
   validateSafeRelativePath(normalized);
   return normalized;
+}
+
+function findMarkedBlock(content: string, marker: string): string | undefined {
+  const startMarker = `# >>> ${marker} >>>`;
+  const endMarker = `# <<< ${marker} <<<`;
+  const markerStart = lineStartIndex(content, startMarker);
+  if (markerStart < 0) return undefined;
+  const start = markerStart > 0 && content[markerStart - 1] === "\n"
+    ? markerStart - 1
+    : markerStart;
+  const endStart = lineStartIndex(content, endMarker, markerStart + startMarker.length);
+  if (endStart < 0) throw new Error(`Inserted block "${marker}" has no closing marker.`);
+  const end = lineEndIndex(content, endStart + endMarker.length);
+  if (lineStartIndex(content, startMarker, end) >= 0) {
+    throw new Error(`Inserted block "${marker}" appears more than once.`);
+  }
+  return content.slice(start, end);
+}
+
+function lineStartIndex(content: string, marker: string, from = 0): number {
+  let index = content.indexOf(marker, from);
+  while (index >= 0 && index > 0 && content[index - 1] !== "\n") {
+    index = content.indexOf(marker, index + marker.length);
+  }
+  return index;
+}
+
+function lineEndIndex(content: string, from: number): number {
+  const newline = content.indexOf("\n", from);
+  return newline < 0 ? content.length : newline + 1;
 }
 
 function resolveDestination(root: string, relativePath: string): string {

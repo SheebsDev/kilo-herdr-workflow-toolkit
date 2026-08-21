@@ -2169,6 +2169,19 @@ function toOpaqueAdapterChange(
     }
     expectedValueSha256 = rollback.sha256;
   }
+  if (change.artifactType === "inserted-block") {
+    const rollback = rollbackInputs.find(
+      (input): input is Extract<RollbackInput, { type: "inserted-block" }> =>
+        input.type === "inserted-block" && sameNativePath(input.path, change.destinationPath),
+    );
+    const marker = requireSemanticKey(change);
+    const baselineBlock = rollback?.content === undefined
+      ? undefined
+      : findInsertedBlock(rollback.content, marker);
+    expectedValueSha256 = baselineBlock === undefined
+      ? undefined
+      : hashOwnedValue(baselineBlock);
+  }
   return {
     semanticId: change.id,
     harness: requireSingleHarness(change),
@@ -2177,6 +2190,28 @@ function toOpaqueAdapterChange(
     desiredValue: change.desiredValue === undefined ? undefined : cloneJson(change.desiredValue),
     expectedValueSha256,
   };
+}
+
+function findInsertedBlock(content: string, marker: string): string | undefined {
+  const startMarker = `# >>> ${marker} >>>`;
+  const endMarker = `# <<< ${marker} <<<`;
+  const markerStart = lineStartIndex(content, startMarker);
+  if (markerStart < 0) return undefined;
+  const start = markerStart > 0 && content[markerStart - 1] === "\n"
+    ? markerStart - 1
+    : markerStart;
+  const endStart = lineStartIndex(content, endMarker, markerStart + startMarker.length);
+  if (endStart < 0) throw new Error(`Inserted block "${marker}" has no closing marker.`);
+  const newline = content.indexOf("\n", endStart + endMarker.length);
+  return content.slice(start, newline < 0 ? content.length : newline + 1);
+}
+
+function lineStartIndex(content: string, marker: string, from = 0): number {
+  let index = content.indexOf(marker, from);
+  while (index >= 0 && index > 0 && content[index - 1] !== "\n") {
+    index = content.indexOf(marker, index + marker.length);
+  }
+  return index;
 }
 
 function validateOpaqueAdapterChange(value: unknown): void {
